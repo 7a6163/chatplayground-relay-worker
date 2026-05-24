@@ -1,0 +1,30 @@
+/**
+ * Wrangler config for chatplayground-relay.
+ * Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "chatplayground-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-07-25",
+  "preview_urls": false,
+  "observability": {
+    "enabled": true
+  },
+
+  "vars": {
+    "UPSTREAM_CHAT_URL": "https://app.chatplayground.ai/api/chat/azure",
+    "UPSTREAM_ORIGIN": "https://web.chatplayground.ai",
+    "UPSTREAM_REFERER": "https://web.chatplayground.ai/",
+    "UPSTREAM_HOMEPAGE": "https://web.chatplayground.ai/",
+    "UPSTREAM_UPLOAD_URL": "https://temp-file-host.chatplayground.ai/upload"
+  }
+
+  // KV namespaces (model cache + rate limiter) — uncomment + fill IDs
+  // after running `wrangler kv namespace create MODEL_CACHE` etc.
+  //
+  // "kv_namespaces": [
+  //   { "binding": "MODEL_CACHE", "id": "" },
+  //   { "binding": "RATE_LIMIT", "id": "" }
+  // ]
+}

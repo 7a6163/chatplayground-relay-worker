@@ -1,0 +1,6 @@
+# chatplayground worker has no required secrets — auth is BYOK from the caller.
+# This file is only here so future dev-only overrides have a home.
+# Copy to .dev.vars (gitignored) if you need to override anything.
+#
+# Example (uncomment to use):
+# UPSTREAM_CHAT_URL=https://app.chatplayground.ai/api/chat/azure
