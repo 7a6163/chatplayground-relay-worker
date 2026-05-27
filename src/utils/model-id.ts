@@ -22,6 +22,7 @@ export function findModel(
     if (provider && id) {
       return {
         id,
+        modelName: id,
         upstreamModel: input,
         upstreamBotId: id,
         provider,

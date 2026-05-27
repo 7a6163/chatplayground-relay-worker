@@ -55,28 +55,32 @@ as the OpenAI-style Bearer token. The worker forwards it to upstream as
 
 | Not supported | Why |
 |---|---|
-| Tool / function calling | Upstream `/api/chat/azure` doesn't expose tool use |
+| Tool / function calling | No upstream chat endpoint exposes tool use |
 | `/v1/images/generations` | Upstream image-gen models live on a different endpoint |
 | `/v1/embeddings` | Upstream doesn't expose embeddings |
 | `/v1/audio/*` | Upstream doesn't expose audio |
 
-### Currently-active chat models (auto-discovered)
+### Chat models (auto-discovered)
 
-At time of writing, chatplayground's bundle exposes 8 active chat models:
+chatplayground serves chat models from **three upstream endpoints**
+(`azure` / `perplexity` / `lmsys`), routed by model `botId`. The relay mirrors
+that routing automatically, so a single OpenAI `model` field reaches the right
+one. It exposes **every chat-group model** in the bundle — including models
+chatplayground marks `active:false` (hidden in their UI but still callable
+upstream, e.g. perplexity `sonar-pro`).
 
-| Model id (use this in `model` field) | Provider | Vision |
-|---|---|---|
-| `gpt-5.5` | openai | ✅ |
-| `gpt-5.4` | openai | ✅ |
-| `gpt-5.3-chat` | openai | ✅ |
-| `gemini-3-flash` | google | ✅ |
-| `claude-haiku-4-5` | anthropic | ✅ |
-| `deepseek-v4-flash` | deepseek | — |
-| `deepseek-v4-pro` | deepseek | — |
-| `llama-4-scout` | meta | ✅ |
+Some commonly-available ids (call `GET /v1/models` for the live set):
 
-The actual list is fetched live from chatplayground on first request and
-refreshed periodically — call `GET /v1/models` for the current set.
+| Model id (use this in `model` field) | Provider | Endpoint | Vision |
+|---|---|---|---|
+| `gpt-5.5` | openai | azure | ✅ |
+| `gpt-5.4` | openai | azure | ✅ |
+| `gemini-3-flash` | google | azure | ✅ |
+| `claude-haiku-4-5` | anthropic | azure | ✅ |
+| `deepseek-v4-pro` | deepseek | azure | — |
+| `kimi-k2.6` | moonshot | azure | — |
+| `perplexity-sonar-pro` | perplexity | perplexity | — |
+| `llama-4-scout` | meta | lmsys | ✅ |
 
 ## Quick start
 
@@ -210,7 +214,8 @@ Cloudflare Worker (Hono)
   ├── routes/models            → live discovery + 3-layer cache
   └── routes/files             → forward multipart to temp-file-host
                 │
-                │  POST app.chatplayground.ai/api/chat/azure
+                │  POST app.chatplayground.ai/api/chat/{azure|perplexity|lmsys}
+                │       (endpoint chosen per model botId)
                 │  Content-Type: text/plain;charset=UTF-8
                 │  X-Clerk-User-Id: <forwarded>
                 ▼
@@ -229,7 +234,8 @@ Cloudflare Worker (Hono)
 3. **Live discovery** — fetch `web.chatplayground.ai/`, regex out the current
    `assets/index-XXX.js` bundle hash, fetch the bundle, regex-extract model
    entries (`{botId, modelName, provider, group, active, supportImage}`),
-   filter to `group:"chat"` + `active:true`
+   filter to `group:"chat"`. The `active` flag is **not** filtered on — it
+   controls UI visibility only; inactive models are still callable upstream.
 4. **SEED fallback** — small hardcoded list, used if discovery fails
 
 The bundle hash rotates on every chatplayground deploy; the discovery flow
@@ -270,7 +276,7 @@ different upstream instance.
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `UPSTREAM_CHAT_URL` | `https://app.chatplayground.ai/api/chat/azure` | Chat endpoint |
+| `UPSTREAM_CHAT_URL` | `https://app.chatplayground.ai/api/chat/azure` | Azure chat endpoint; the `perplexity` / `lmsys` sibling URLs are derived from it |
 | `UPSTREAM_ORIGIN` | `https://web.chatplayground.ai` | Forwarded as `Origin` |
 | `UPSTREAM_REFERER` | `https://web.chatplayground.ai/` | Forwarded as `Referer` |
 | `UPSTREAM_HOMEPAGE` | `https://web.chatplayground.ai/` | Scraped for current bundle URL |
@@ -284,8 +290,8 @@ Optional KV bindings:
 
 ## Caveats
 
-1. **No tool / function calling.** Upstream `/api/chat/azure` doesn't support
-   it.
+1. **No tool / function calling.** None of the upstream chat endpoints
+   (`azure` / `perplexity` / `lmsys`) support it.
 2. **No real usage counts.** chatplayground doesn't return token usage, so
    the `usage` field is estimated (chars ÷ 4). Don't bill on it.
 3. **Brittle to upstream changes.** Any change to bundle structure, endpoint

@@ -2,7 +2,7 @@ import { SEED_MODELS, type ModelEntry } from "../constants/models";
 import { DISCOVERY_TIMEOUT } from "../constants/timeouts";
 import { parseModels } from "./model-parser";
 
-const CACHE_KEY = "models:v1";
+const CACHE_KEY = "models:v2"; // v2: ModelEntry gained `modelName`
 const KV_TTL_S = 60 * 60; // 1 hour — bundle hash rotates rarely
 const MEM_TTL_MS = 5 * 60 * 1000; // 5 min in-isolate cache
 const BUNDLE_RE = /\/assets\/(index-[A-Za-z0-9_-]+\.js)/;
