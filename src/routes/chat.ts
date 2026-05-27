@@ -17,6 +17,7 @@ import { findModel } from "../utils/model-id";
 import {
   buildUpstreamHeaders,
   buildUpstreamRequest,
+  endpointUrl,
 } from "../utils/upstream-request";
 import {
   collectUpstream,
@@ -44,10 +45,10 @@ chat.post("/v1/chat/completions", async (c) => {
   const model = findModel(body.model, registry);
   if (!model) throw modelNotFound(body.model);
 
-  const upstreamBody = buildUpstreamRequest(body, model);
+  const { endpoint, body: upstreamBody } = buildUpstreamRequest(body, model);
   const clerkUserId = c.get("clerkUserId");
 
-  const upstream = await fetch(c.env.UPSTREAM_CHAT_URL, {
+  const upstream = await fetch(endpointUrl(endpoint, c.env.UPSTREAM_CHAT_URL), {
     method: "POST",
     headers: buildUpstreamHeaders(clerkUserId, c.env),
     body: JSON.stringify(upstreamBody),

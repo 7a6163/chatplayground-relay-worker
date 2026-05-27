@@ -18,12 +18,6 @@ function strField(src: string, name: string): string | null {
   return m?.[1] ?? null;
 }
 
-function boolField(src: string, name: string): boolean {
-  const m = new RegExp(`${name}:(!\\d|true|false)`).exec(src);
-  if (!m) return false;
-  return m[1] === "true" || m[1] === "!0";
-}
-
 export function parseModels(bundleSource: string): ModelEntry[] {
   const out: ModelEntry[] = [];
   ENTRY_START_RE.lastIndex = 0;
@@ -39,14 +33,16 @@ export function parseModels(bundleSource: string): ModelEntry[] {
       const modelName = strField(window, "modelName");
       const provider = strField(window, "provider");
       const group = strField(window, "group");
-      const active = boolField(window, "active");
 
-      // Only expose active chat models. Image/audio groups are filtered
-      // because they don't go through /api/chat/azure.
-      if (modelName && provider && group === "chat" && active) {
+      // Include every chat-group model. We deliberately do NOT filter on the
+      // bundle's `active` flag — `active` controls UI visibility only;
+      // inactive models (e.g. sonar-pro) are still callable on the backend.
+      // Image/audio groups stay excluded; they don't use the chat endpoints.
+      if (modelName && provider && group === "chat") {
         const providerLc = provider.toLowerCase();
         out.push({
           id: botId,
+          modelName,
           upstreamModel: `${providerLc}/${modelName}`,
           upstreamBotId: botId,
           provider: providerLc,

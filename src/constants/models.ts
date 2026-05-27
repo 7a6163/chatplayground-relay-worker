@@ -9,6 +9,7 @@
 
 export interface ModelEntry {
   id: string; // public id callers use (mirrors upstreamBotId)
+  modelName: string; // bare model name, e.g. "gpt-5.5" / "sonar-pro"
   upstreamModel: string; // full slug, e.g. "google/gemini-3-flash-preview"
   upstreamBotId: string; // short id, e.g. "gemini-3-flash"
   provider: string; // "google"
@@ -18,6 +19,7 @@ function m(provider: string, model: string, botId?: string): ModelEntry {
   const bot = botId ?? model;
   return {
     id: bot,
+    modelName: model,
     upstreamModel: `${provider}/${model}`,
     upstreamBotId: bot,
     provider,
