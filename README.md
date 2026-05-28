@@ -82,6 +82,12 @@ Some commonly-available ids (call `GET /v1/models` for the live set):
 | `perplexity-sonar-pro` | perplexity | perplexity | — |
 | `llama-4-scout` | meta | lmsys | ✅ |
 
+> Perplexity models return a structured citation list at the end of the
+> stream. The relay strips that raw payload and re-emits the URLs as a
+> Markdown `**Sources**` block; on the non-streaming path it also rewrites
+> inline `[N]` markers as Markdown links so they render as clickable in
+> OpenAI-compatible chat clients.
+
 ## Quick start
 
 ### Local development
@@ -291,7 +297,10 @@ Optional KV bindings:
 ## Caveats
 
 1. **No tool / function calling.** None of the upstream chat endpoints
-   (`azure` / `perplexity` / `lmsys`) support it.
+   (`azure` / `perplexity` / `lmsys`) support it — live-tested: injected
+   OpenAI `tools` are ignored and answered as prose, and a forced
+   `tool_choice` returns a plain-text error, never a structured `tool_calls`
+   reply. The relay also never forwards `tools` / `tool_choice` upstream.
 2. **No real usage counts.** chatplayground doesn't return token usage, so
    the `usage` field is estimated (chars ÷ 4). Don't bill on it.
 3. **Brittle to upstream changes.** Any change to bundle structure, endpoint

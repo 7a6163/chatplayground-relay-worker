@@ -21,6 +21,8 @@ import {
 } from "../utils/upstream-request";
 import {
   collectUpstream,
+  formatCitations,
+  inlineCitationLinks,
   streamUpstreamAsOpenAI,
 } from "../utils/upstream-stream";
 
@@ -80,7 +82,16 @@ chat.post("/v1/chat/completions", async (c) => {
     });
   }
 
-  const { content } = await collectUpstream(upstream.body);
+  const { content: rawContent, citations } = await collectUpstream(upstream.body);
+
+  // Non-streaming path: inline-rewrite [N] citation markers as Markdown links
+  // and append a sources block. Usage stays based on raw model output so the
+  // relay-added link formatting doesn't inflate completion_tokens.
+  const content =
+    citations.length === 0
+      ? rawContent
+      : inlineCitationLinks(rawContent, citations) +
+        formatCitations(citations);
 
   const response: ChatCompletionResponse = {
     id,
@@ -94,7 +105,7 @@ chat.post("/v1/chat/completions", async (c) => {
         finish_reason: "stop",
       },
     ],
-    usage: estimateUsage(body.messages, content),
+    usage: estimateUsage(body.messages, rawContent),
   };
 
   return Response.json(response);
