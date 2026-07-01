@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveEndpoint } from "../src/constants/endpoints";
+import { toEndpoint } from "../src/constants/endpoints";
 import type { ModelEntry } from "../src/constants/models";
 import type { ChatCompletionRequest } from "../src/types/openai";
 import {
@@ -7,31 +7,32 @@ import {
   endpointUrl,
 } from "../src/utils/upstream-request";
 
-// gpt-5.5 is in the azure allowlist.
 const AZURE_MODEL: ModelEntry = {
   id: "gpt-5.5",
   modelName: "gpt-5.5",
   upstreamModel: "openai/gpt-5.5",
   upstreamBotId: "gpt-5.5",
   provider: "openai",
+  endpoint: "azure",
 };
 
-// botId contains "perplexity" → perplexity endpoint.
 const PERPLEXITY_MODEL: ModelEntry = {
   id: "perplexity-sonar-pro",
   modelName: "sonar-pro",
   upstreamModel: "perplexity/sonar-pro",
   upstreamBotId: "perplexity-sonar-pro",
   provider: "perplexity",
+  endpoint: "perplexity",
 };
 
-// Not in the allowlist and no "perplexity" → lmsys fallback.
+// lmsys modelName is a full provider slug (with a slash) in the live feed.
 const LMSYS_MODEL: ModelEntry = {
   id: "llama-4-scout",
-  modelName: "llama-4-scout",
-  upstreamModel: "meta/llama-4-scout",
+  modelName: "meta-llama/llama-4-scout-17b-16e-instruct",
+  upstreamModel: "meta/meta-llama/llama-4-scout-17b-16e-instruct",
   upstreamBotId: "llama-4-scout",
   provider: "meta",
+  endpoint: "lmsys",
 };
 
 const AZURE_BASE_URL = "https://app.chatplayground.ai/api/chat/azure";
@@ -98,30 +99,27 @@ describe("buildUpstreamRequest — per-endpoint body shape", () => {
     });
   });
 
-  it("lmsys: bare name in `model` + apiKey:null (not the slug)", () => {
+  it("lmsys: modelName passed through in `model` + apiKey:null", () => {
     const { endpoint, body } = buildUpstreamRequest(req, LMSYS_MODEL);
     expect(endpoint).toBe("lmsys");
-    expect(body).toMatchObject({ model: "llama-4-scout", apiKey: null });
-    // The bare name, not the "meta/llama-4-scout" slug.
-    expect((body as { model: string }).model).not.toContain("/");
+    expect(body).toMatchObject({
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      apiKey: null,
+    });
+    expect(body).not.toHaveProperty("modelName");
   });
 });
 
-describe("resolveEndpoint", () => {
-  it("routes allowlisted botIds to azure", () => {
-    expect(resolveEndpoint("gpt-5.5")).toBe("azure");
-    expect(resolveEndpoint("kimi-k2.6")).toBe("azure");
-    expect(resolveEndpoint("claude-haiku-4-5")).toBe("azure");
+describe("toEndpoint", () => {
+  it("passes through the three known endpoints", () => {
+    expect(toEndpoint("azure")).toBe("azure");
+    expect(toEndpoint("perplexity")).toBe("perplexity");
+    expect(toEndpoint("lmsys")).toBe("lmsys");
   });
 
-  it("routes botIds containing 'perplexity' to perplexity", () => {
-    expect(resolveEndpoint("perplexity-sonar-pro")).toBe("perplexity");
-    expect(resolveEndpoint("perplexity-sonar-reasoning")).toBe("perplexity");
-  });
-
-  it("falls back to lmsys for everything else", () => {
-    expect(resolveEndpoint("llama-4-scout")).toBe("lmsys");
-    expect(resolveEndpoint("some-unknown-model")).toBe("lmsys");
+  it("defaults unknown endpoint values to lmsys", () => {
+    expect(toEndpoint("something-new")).toBe("lmsys");
+    expect(toEndpoint("")).toBe("lmsys");
   });
 });
 

@@ -3,7 +3,6 @@ export interface Env {
   UPSTREAM_CHAT_URL: string;
   UPSTREAM_ORIGIN: string;
   UPSTREAM_REFERER: string;
-  UPSTREAM_HOMEPAGE: string;
   UPSTREAM_UPLOAD_URL: string;
 
   // KV bindings (optional — discovery falls back to SEED_MODELS without them)

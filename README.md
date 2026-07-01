@@ -24,8 +24,8 @@ where possible):
 
 - chatplayground changes endpoint paths or request shape
 - chatplayground tightens authentication on their internal endpoint
-- chatplayground rotates the JS bundle in a way that breaks the model parser
-  (falls back to a small SEED list on parse failure)
+- chatplayground changes the `/api/models` shape in a way that breaks discovery
+  (falls back to a small SEED list on failure)
 
 ## Authentication: bring your own Clerk user ID
 
@@ -50,7 +50,7 @@ as the OpenAI-style Bearer token. The worker forwards it to upstream as
 | Endpoint | Notes |
 |---|---|
 | `POST /v1/chat/completions` | Stream + non-stream; multimodal (`image_url` content parts) |
-| `GET /v1/models` | Dynamic discovery from chatplayground's JS bundle, KV + memory cached |
+| `GET /v1/models` | Dynamic discovery from chatplayground's `/api/models`, KV + memory cached |
 | `POST /v1/files` | Image upload proxy → returns a URL usable as `image_url.url` |
 
 | Not supported | Why |
@@ -65,7 +65,7 @@ as the OpenAI-style Bearer token. The worker forwards it to upstream as
 chatplayground serves chat models from **three upstream endpoints**
 (`azure` / `perplexity` / `lmsys`), routed by model `botId`. The relay mirrors
 that routing automatically, so a single OpenAI `model` field reaches the right
-one. It exposes **every chat-group model** in the bundle — including models
+one. It exposes **every chat-group model** in the feed — including models
 chatplayground marks `active:false` (hidden in their UI but still callable
 upstream, e.g. perplexity `sonar-pro`).
 
@@ -237,15 +237,13 @@ Cloudflare Worker (Hono)
 
 1. **In-isolate memory cache** (5 min TTL) — hits if isolate is warm
 2. **KV cache** (1 h TTL) — hits across isolates if `MODEL_CACHE` binding is configured
-3. **Live discovery** — fetch `web.chatplayground.ai/`, regex out the current
-   `assets/index-XXX.js` bundle hash, fetch the bundle, regex-extract model
-   entries (`{botId, modelName, provider, group, active, supportImage}`),
-   filter to `group:"chat"`. The `active` flag is **not** filtered on — it
-   controls UI visibility only; inactive models are still callable upstream.
+3. **Live discovery** — `GET app.chatplayground.ai/api/models` (public JSON,
+   no auth), validate each entry (`{botId, modelName, provider, group,
+   endpoint, active}`), keep `group:"chat"`. The `active` flag is **not**
+   filtered on — it controls UI visibility only; inactive models are still
+   callable upstream. Each entry's `endpoint` field decides which of the three
+   `/api/chat/*` upstreams serves it.
 4. **SEED fallback** — small hardcoded list, used if discovery fails
-
-The bundle hash rotates on every chatplayground deploy; the discovery flow
-follows it automatically.
 
 ## Project layout
 
@@ -269,8 +267,7 @@ src/
 └── utils/
     ├── errors.ts             OpenAIHTTPError class + factory helpers
     ├── model-id.ts           findModel(input, registry)
-    ├── model-parser.ts       regex-extract entries from JS bundle
-    ├── model-discovery.ts    homepage → bundle → parse + cache layers
+    ├── model-discovery.ts    /api/models fetch + validate + cache layers
     ├── upstream-request.ts   OpenAI → chatplayground body translator
     └── upstream-stream.ts    CHAT_ID sentinel strip + OpenAI SSE wrap
 ```
@@ -285,7 +282,6 @@ different upstream instance.
 | `UPSTREAM_CHAT_URL` | `https://app.chatplayground.ai/api/chat/azure` | Azure chat endpoint; the `perplexity` / `lmsys` sibling URLs are derived from it |
 | `UPSTREAM_ORIGIN` | `https://web.chatplayground.ai` | Forwarded as `Origin` |
 | `UPSTREAM_REFERER` | `https://web.chatplayground.ai/` | Forwarded as `Referer` |
-| `UPSTREAM_HOMEPAGE` | `https://web.chatplayground.ai/` | Scraped for current bundle URL |
 | `UPSTREAM_UPLOAD_URL` | `https://temp-file-host.chatplayground.ai/upload` | File upload endpoint |
 
 Optional KV bindings:
@@ -303,7 +299,7 @@ Optional KV bindings:
    reply. The relay also never forwards `tools` / `tool_choice` upstream.
 2. **No real usage counts.** chatplayground doesn't return token usage, so
    the `usage` field is estimated (chars ÷ 4). Don't bill on it.
-3. **Brittle to upstream changes.** Any change to bundle structure, endpoint
+3. **Brittle to upstream changes.** Any change to `/api/models` shape, endpoint
    path, or request shape may break the worker. Open an issue / PR.
 4. **`/v1/files` is essentially anonymous.** chatplayground's upload
    endpoint accepts any caller (no auth), and our Bearer regex is a speed

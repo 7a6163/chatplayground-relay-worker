@@ -26,6 +26,7 @@ export function findModel(
         upstreamModel: input,
         upstreamBotId: id,
         provider,
+        endpoint: "lmsys", // unknown passthrough → lmsys catch-all
       };
     }
   }

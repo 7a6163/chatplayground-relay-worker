@@ -1,4 +1,4 @@
-import { resolveEndpoint, type UpstreamEndpoint } from "../constants/endpoints";
+import type { UpstreamEndpoint } from "../constants/endpoints";
 import type { ModelEntry } from "../constants/models";
 import type { ChatCompletionRequest } from "../types/openai";
 import type { UpstreamChatRequest, UpstreamMessage } from "../types/upstream";
@@ -40,7 +40,7 @@ export function buildUpstreamRequest(
   // lmsys wants the bare name in `model`. perplexity/lmsys also take an
   // apiKey — null means "use chatplayground's own upstream key" (the relay
   // is BYO-less, so always null).
-  const endpoint = resolveEndpoint(model.upstreamBotId);
+  const endpoint = model.endpoint;
   switch (endpoint) {
     case "azure":
       return { endpoint, body: { ...base, model: model.upstreamModel } };

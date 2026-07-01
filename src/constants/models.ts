@@ -1,5 +1,5 @@
-// Seed registry — placeholder until model discovery extracts the
-// authoritative list from web.chatplayground.ai's bundle.
+// Seed registry — safety net used only if live discovery from
+// chatplayground's /api/models feed fails. The live feed is authoritative.
 //
 // Note: upstreamBotId is NOT always the bare suffix of upstreamModel.
 // Captured examples:
@@ -7,15 +7,23 @@
 //   model="google/gemini-3-flash-preview" botId="gemini-3-flash"
 // Always carry both fields independently.
 
+import type { UpstreamEndpoint } from "./endpoints";
+
 export interface ModelEntry {
   id: string; // public id callers use (mirrors upstreamBotId)
   modelName: string; // bare model name, e.g. "gpt-5.5" / "sonar-pro"
   upstreamModel: string; // full slug, e.g. "google/gemini-3-flash-preview"
   upstreamBotId: string; // short id, e.g. "gemini-3-flash"
   provider: string; // "google"
+  endpoint: UpstreamEndpoint; // which /api/chat/* endpoint serves this model
 }
 
-function m(provider: string, model: string, botId?: string): ModelEntry {
+function m(
+  provider: string,
+  model: string,
+  endpoint: UpstreamEndpoint = "azure",
+  botId?: string,
+): ModelEntry {
   const bot = botId ?? model;
   return {
     id: bot,
@@ -23,21 +31,13 @@ function m(provider: string, model: string, botId?: string): ModelEntry {
     upstreamModel: `${provider}/${model}`,
     upstreamBotId: bot,
     provider,
+    endpoint,
   };
 }
 
 export const SEED_MODELS: ModelEntry[] = [
-  // Confirmed via Burp capture:
   m("openai", "gpt-5.5"),
   m("openai", "gpt-5.4"),
-  m("google", "gemini-3-flash-preview", "gemini-3-flash"),
-
-  // Likely-supported placeholders (replace with bundle-derived list):
-  m("openai", "gpt-4o"),
-  m("openai", "gpt-4o-mini"),
-  m("anthropic", "claude-4.6-sonnet"),
-  m("anthropic", "claude-4-opus"),
-  m("google", "gemini-3-pro"),
-  m("xai", "grok-3"),
-  m("deepseek", "deepseek-v3"),
+  m("google", "gemini-3-flash-preview", "azure", "gemini-3-flash"),
+  m("perplexity", "sonar-pro", "perplexity", "perplexity-sonar-pro"),
 ];
