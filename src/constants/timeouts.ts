@@ -11,5 +11,5 @@ export const CHAT_TIMEOUT = 5 * 60_000;
 /** Upload via /v1/files. Even 20MB images upload in seconds. */
 export const UPLOAD_TIMEOUT = 60_000;
 
-/** Model discovery (homepage HTML + bundle JS fetch). */
+/** Model discovery (single /api/models JSON fetch). */
 export const DISCOVERY_TIMEOUT = 10_000;

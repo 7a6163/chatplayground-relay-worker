@@ -71,10 +71,15 @@ async function discover(chatUrl: string): Promise<ModelEntry[]> {
     // Include inactive models too — `active` is UI visibility only; inactive
     // models (e.g. perplexity sonar-pro) are still callable upstream.
     const provider = e.provider.toLowerCase();
+    // Some feed modelNames already carry a provider slug (e.g. lmsys
+    // "meta-llama/llama-4-scout-…"); don't double-prefix those.
+    const upstreamModel = e.modelName.includes("/")
+      ? e.modelName
+      : `${provider}/${e.modelName}`;
     out.push({
       id: e.botId,
       modelName: e.modelName,
-      upstreamModel: `${provider}/${e.modelName}`,
+      upstreamModel,
       upstreamBotId: e.botId,
       provider,
       endpoint: toEndpoint(e.endpoint),
@@ -88,7 +93,9 @@ function isApiModel(v: unknown): v is ApiModel {
   const o = v as Record<string, unknown>;
   return (
     typeof o.botId === "string" &&
+    o.botId.length > 0 &&
     typeof o.modelName === "string" &&
+    o.modelName.length > 0 &&
     typeof o.provider === "string" &&
     typeof o.group === "string" &&
     typeof o.endpoint === "string"

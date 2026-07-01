@@ -45,6 +45,23 @@ as the OpenAI-style Bearer token. The worker forwards it to upstream as
 > It grants access to your chatplayground account quota.
 > Don't share it. Don't post your worker URL publicly without thinking.
 
+### Optional: gateway mode (custom API key, hidden Clerk ID)
+
+Passthrough mode hands your Clerk ID to every client. If you'd rather keep the
+Clerk ID server-side and give callers a custom key you can rotate, set two
+secrets:
+
+```bash
+wrangler secret put CLERK_USER_ID    # your real user_... identity
+wrangler secret put RELAY_API_KEY    # a key you invent, e.g. sk-relay-xxxxx
+```
+
+Once `RELAY_API_KEY` is set, callers authenticate with **that** key
+(`Authorization: Bearer sk-relay-xxxxx`) and the worker uses the stored
+`CLERK_USER_ID` upstream — the real identity is never exposed. Unset the secret
+to fall back to passthrough. (Secrets, not `wrangler.jsonc` vars — vars are
+plaintext.)
+
 ## Features
 
 | Endpoint | Notes |
