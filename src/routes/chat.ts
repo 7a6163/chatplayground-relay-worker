@@ -7,11 +7,7 @@ import type {
   ChatCompletionUsage,
   OpenAIMessage,
 } from "../types/openai";
-import {
-  invalidRequest,
-  modelNotFound,
-  upstreamError,
-} from "../utils/errors";
+import { invalidRequest, modelNotFound, upstreamError } from "../utils/errors";
 import { getModels } from "../utils/model-discovery";
 import { findModel } from "../utils/model-id";
 import {
@@ -29,9 +25,9 @@ import {
 const chat = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 chat.post("/v1/chat/completions", async (c) => {
-  const body = (await c.req.json().catch(() => null)) as
-    | ChatCompletionRequest
-    | null;
+  const body = (await c.req
+    .json()
+    .catch(() => null)) as ChatCompletionRequest | null;
 
   if (!body || typeof body !== "object") {
     throw invalidRequest("Request body must be JSON.");
@@ -82,7 +78,9 @@ chat.post("/v1/chat/completions", async (c) => {
     });
   }
 
-  const { content: rawContent, citations } = await collectUpstream(upstream.body);
+  const { content: rawContent, citations } = await collectUpstream(
+    upstream.body,
+  );
 
   // Non-streaming path: inline-rewrite [N] citation markers as Markdown links
   // and append a sources block. Usage stays based on raw model output so the
@@ -90,8 +88,7 @@ chat.post("/v1/chat/completions", async (c) => {
   const content =
     citations.length === 0
       ? rawContent
-      : inlineCitationLinks(rawContent, citations) +
-        formatCitations(citations);
+      : inlineCitationLinks(rawContent, citations) + formatCitations(citations);
 
   const response: ChatCompletionResponse = {
     id,

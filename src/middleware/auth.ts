@@ -58,6 +58,7 @@ export function safeEqual(a: string, b: string): boolean {
   const bb = enc.encode(b);
   if (ab.length !== bb.length) return false;
   let diff = 0;
-  for (let i = 0; i < ab.length; i++) diff |= (ab[i] as number) ^ (bb[i] as number);
+  for (let i = 0; i < ab.length; i++)
+    diff |= (ab[i] as number) ^ (bb[i] as number);
   return diff === 0;
 }

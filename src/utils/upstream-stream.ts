@@ -54,7 +54,8 @@ export function parseTrailers(buf: string): ParsedUpstream {
     const parsed = safeParseStringArray(cm[1]);
     if (parsed) {
       citations = parsed;
-      working = working.slice(0, cm.index) + working.slice(cm.index + cm[0].length);
+      working =
+        working.slice(0, cm.index) + working.slice(cm.index + cm[0].length);
     }
   }
 

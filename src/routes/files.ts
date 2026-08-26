@@ -48,9 +48,7 @@ files.post("/v1/files", async (c) => {
     );
   }
 
-  const body = (await res.json().catch(() => null)) as
-    | { url?: string }
-    | null;
+  const body = (await res.json().catch(() => null)) as { url?: string } | null;
   if (!body?.url) {
     throw upstreamError(
       502,

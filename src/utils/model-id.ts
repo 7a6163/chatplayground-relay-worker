@@ -1,4 +1,4 @@
-import { SEED_MODELS, type ModelEntry } from "../constants/models";
+import { type ModelEntry, SEED_MODELS } from "../constants/models";
 
 /**
  * Resolve a caller-supplied model id.

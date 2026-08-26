@@ -11,9 +11,7 @@ export interface OpenAIContentPartImage {
   image_url: { url: string; detail?: "auto" | "low" | "high" };
 }
 
-export type OpenAIContentPart =
-  | OpenAIContentPartText
-  | OpenAIContentPartImage;
+export type OpenAIContentPart = OpenAIContentPartText | OpenAIContentPartImage;
 
 export type OpenAIMessageContent = string | OpenAIContentPart[];
 

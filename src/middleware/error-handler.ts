@@ -14,8 +14,7 @@ export const errorHandler: ErrorHandler<{
   }
 
   console.error("Unhandled error", err);
-  const message =
-    err instanceof Error ? err.message : "Internal server error";
+  const message = err instanceof Error ? err.message : "Internal server error";
   return new Response(
     JSON.stringify({
       error: {
