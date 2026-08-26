@@ -85,12 +85,11 @@ that routing automatically, so a single OpenAI `model` field reaches the right
 one. Models chatplayground marks `active:false` are still exposed — that flag
 is UI visibility only, and inactive models remain callable upstream.
 
-The default list targets a **lifetime unlimited** account, since that is who
-runs this relay. Models the feed marks `premiumOnly` are hidden from `GET
-/v1/models`, because upstream returns 403 for them without a premium plan;
-set `PREMIUM_MODELS="true"` to list them anyway. Everything else is shown,
-including the three `lifetimeOnly` models — a lifetime account can call those,
-so the default list is exactly its entitlement. They stay callable either way:
+Models the feed marks `premiumOnly` are **hidden from `GET /v1/models` by
+default**, because upstream returns 403 for them without a premium plan; set
+`PREMIUM_MODELS="true"` to list them anyway. Everything else is shown,
+including the three models flagged `lifetimeOnly` — see the caveats for what
+that flag is and isn't known to do. Hidden models stay callable either way:
 the filter only changes what the relay advertises, and upstream remains the
 thing that enforces access.
 
@@ -359,17 +358,20 @@ Optional KV bindings:
    so a hardcoded id returns HTTP 403 `upstream_403`. The gate is `premiumOnly`,
    not the feed's `tier` field — `gemini-3.7-flash` is `tier:"basic"` and still
    403s — verified on all three models where the two fields disagree.
-   Models flagged `lifetimeOnly` need a lifetime plan but are not
-   `premiumOnly`, so they are listed by default. On a **non**-lifetime account
-   those three (`claude-sonnet-4-6`, `gemini-3.5-flash-lite`, `kimi-k2.6`)
-   will 403; there is no switch to hide them, by design.
-4. **Brittle to upstream changes.** Any change to `/api/models` shape, endpoint
+4. **`lifetimeOnly` is an unresolved flag.** Three models carry it
+   (`claude-sonnet-4-6`, `gemini-3.5-flash-lite`, `kimi-k2.6`). Only one was
+   ever tested, on one paid account, and it worked — which cannot distinguish
+   a real entitlement gate from a UI badge, the way `active` is one. It is
+   also not established that the flag refers to the same product as any given
+   "lifetime" plan. The relay does not read it: all three are
+   `premiumOnly:false`, so they are listed regardless of what it means.
+5. **Brittle to upstream changes.** Any change to `/api/models` shape, endpoint
    path, or request shape may break the worker. Open an issue / PR.
-5. **`/v1/files` is essentially anonymous.** chatplayground's upload
+6. **`/v1/files` is essentially anonymous.** chatplayground's upload
    endpoint accepts any caller (no auth), and our Bearer regex is a speed
    bump, not a gate. If you deploy publicly and care about your worker's
    request quota, add a size cap or remove the route.
-6. **Keep your Clerk user ID private.** It grants access to your
+7. **Keep your Clerk user ID private.** It grants access to your
    chatplayground account quota; treat it like an API key.
 
 ## License
