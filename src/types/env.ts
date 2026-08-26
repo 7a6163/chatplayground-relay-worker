@@ -14,10 +14,9 @@ export interface Env {
   RELAY_API_KEY?: string;
   CLERK_USER_ID?: string;
 
-  // KV bindings (optional — without MODEL_CACHE every cold isolate refetches
-  // the model feed, and a discovery failure surfaces as a 503)
+  // KV binding (optional — without it every cold isolate refetches the model
+  // feed, and a discovery failure surfaces as a 503)
   MODEL_CACHE?: KVNamespace;
-  RATE_LIMIT?: KVNamespace;
 }
 
 // Hono context variables populated by middleware.

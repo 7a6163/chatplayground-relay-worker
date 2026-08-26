@@ -23,11 +23,11 @@
     // ,"PREMIUM_MODELS": "true"
   }
 
-  // KV namespaces (model cache + rate limiter) — uncomment + fill IDs
-  // after running `wrangler kv namespace create MODEL_CACHE` etc.
+  // Model registry cache — uncomment + fill the id after running
+  // `wrangler kv namespace create MODEL_CACHE`. Without it only the 5-minute
+  // per-isolate memory cache applies, so every cold isolate refetches the feed.
   //
   // "kv_namespaces": [
-  //   { "binding": "MODEL_CACHE", "id": "" },
-  //   { "binding": "RATE_LIMIT", "id": "" }
+  //   { "binding": "MODEL_CACHE", "id": "" }
   // ]
 }

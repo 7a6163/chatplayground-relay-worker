@@ -5,18 +5,18 @@
 // discovery is already broken. Discovery failure now surfaces as a 503 instead.
 //
 // Note: upstreamBotId is NOT always the bare suffix of upstreamModel. Captured:
-//   model="openai/gpt-5.5"                botId="gpt-5.5"
-//   model="google/gemini-3-flash-preview" botId="gemini-3-flash"
+//   model="openai/gpt-5.6-luna"  botId="gpt-5.6-luna"   (the usual case)
+//   model="perplexity/sonar"     botId="perplexity-sonar"
 // Always carry both fields independently.
 
 import type { UpstreamEndpoint } from "./endpoints";
 
 export interface ModelEntry {
   id: string; // public id callers use (mirrors upstreamBotId)
-  modelName: string; // bare model name, e.g. "gpt-5.5" / "sonar-pro"
-  upstreamModel: string; // full slug, e.g. "google/gemini-3-flash-preview"
-  upstreamBotId: string; // short id, e.g. "gemini-3-flash"
-  provider: string; // "google"
+  modelName: string; // bare model name, e.g. "gpt-5.6-luna" / "sonar"
+  upstreamModel: string; // full slug, e.g. "perplexity/sonar"
+  upstreamBotId: string; // short id, e.g. "perplexity-sonar"
+  provider: string; // "perplexity"
   endpoint: UpstreamEndpoint; // which /api/chat/* endpoint serves this model
   premiumOnly?: boolean; // upstream 403s these without a premium account
 }

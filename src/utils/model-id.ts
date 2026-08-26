@@ -2,8 +2,8 @@ import type { ModelEntry } from "../constants/models";
 
 /**
  * Resolve a caller-supplied model id.
- * Accepts bare ("gemini-3-flash") or provider-prefixed
- * ("google/gemini-3-flash-preview"). Unknown but well-formed
+ * Accepts bare ("gpt-5.6-luna") or provider-prefixed
+ * ("openai/gpt-5.6-luna"). Unknown but well-formed
  * "provider/id" inputs pass through so callers can use models the registry
  * hasn't been updated for yet.
  */
