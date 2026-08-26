@@ -1,8 +1,8 @@
 import { toEndpoint } from "../constants/endpoints";
-import { SEED_MODELS, type ModelEntry } from "../constants/models";
+import { type ModelEntry, SEED_MODELS } from "../constants/models";
 import { DISCOVERY_TIMEOUT } from "../constants/timeouts";
 
-const CACHE_KEY = "models:v3"; // v3: switched to /api/models JSON; gained `endpoint`
+const CACHE_KEY = "models:v4"; // v4: entries gained `premiumOnly`
 const KV_TTL_S = 60 * 60; // 1 hour
 const MEM_TTL_MS = 5 * 60 * 1000; // 5 min in-isolate cache
 
@@ -30,7 +30,8 @@ export async function getModels(env: DiscoveryEnv): Promise<ModelEntry[]> {
 
   try {
     const fresh = await discover(env.UPSTREAM_CHAT_URL);
-    if (fresh.length === 0) throw new Error("no chat models in /api/models feed");
+    if (fresh.length === 0)
+      throw new Error("no chat models in /api/models feed");
     if (env.MODEL_CACHE) {
       await env.MODEL_CACHE.put(CACHE_KEY, JSON.stringify(fresh), {
         expirationTtl: KV_TTL_S,
@@ -51,6 +52,9 @@ interface ApiModel {
   provider: string;
   group: string;
   endpoint: string;
+  // Optional on purpose: if upstream ever drops the field we still want
+  // discovery to succeed rather than fall back to SEED_MODELS.
+  premiumOnly?: boolean;
 }
 
 async function discover(chatUrl: string): Promise<ModelEntry[]> {
@@ -83,6 +87,7 @@ async function discover(chatUrl: string): Promise<ModelEntry[]> {
       upstreamBotId: e.botId,
       provider,
       endpoint: toEndpoint(e.endpoint),
+      premiumOnly: e.premiumOnly === true,
     });
   }
   return out;
@@ -100,4 +105,15 @@ function isApiModel(v: unknown): v is ApiModel {
     typeof o.group === "string" &&
     typeof o.endpoint === "string"
   );
+}
+
+// Which models `/v1/models` advertises. Upstream gates on `premiumOnly` (not
+// on `tier`: gemini-3.7-flash is tier=basic yet 403s), so a non-premium
+// account only sees the models it can actually call. Unset → non-premium.
+// Chat requests are never filtered — upstream is the one enforcing this.
+export function isVisible(
+  m: ModelEntry,
+  env: { PREMIUM_MODELS?: string },
+): boolean {
+  return env.PREMIUM_MODELS === "true" || !m.premiumOnly;
 }

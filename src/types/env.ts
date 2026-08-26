@@ -4,6 +4,8 @@ export interface Env {
   UPSTREAM_ORIGIN: string;
   UPSTREAM_REFERER: string;
   UPSTREAM_UPLOAD_URL: string;
+  // "true" exposes premium models in /v1/models. Unset → non-premium list.
+  PREMIUM_MODELS?: string;
 
   // Gateway auth (optional — set via `wrangler secret put`). When RELAY_API_KEY
   // is set, callers present it instead of a Clerk ID and the worker uses its own

@@ -17,6 +17,10 @@
     "UPSTREAM_ORIGIN": "https://web.chatplayground.ai",
     "UPSTREAM_REFERER": "https://web.chatplayground.ai/",
     "UPSTREAM_UPLOAD_URL": "https://temp-file-host.chatplayground.ai/upload"
+
+    // Uncomment once the account has premium access — exposes the 12
+    // premiumOnly models in /v1/models. Without it they 403 upstream.
+    // ,"PREMIUM_MODELS": "true"
   }
 
   // KV namespaces (model cache + rate limiter) — uncomment + fill IDs

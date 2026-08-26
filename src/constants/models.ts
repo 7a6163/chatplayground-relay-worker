@@ -16,6 +16,7 @@ export interface ModelEntry {
   upstreamBotId: string; // short id, e.g. "gemini-3-flash"
   provider: string; // "google"
   endpoint: UpstreamEndpoint; // which /api/chat/* endpoint serves this model
+  premiumOnly?: boolean; // upstream 403s these without a premium account
 }
 
 function m(
