@@ -1,9 +1,11 @@
-// Seed registry — safety net used only if live discovery from
-// chatplayground's /api/models feed fails. The live feed is authoritative.
+// Shape of one entry in the model registry.
 //
-// Note: upstreamBotId is NOT always the bare suffix of upstreamModel.
-// Captured examples:
-//   model="openai/gpt-5.5"               botId="gpt-5.5"
+// There is deliberately no hardcoded fallback list here: it would be a copy of
+// data that lives upstream, so it rots silently and only gets used on the day
+// discovery is already broken. Discovery failure now surfaces as a 503 instead.
+//
+// Note: upstreamBotId is NOT always the bare suffix of upstreamModel. Captured:
+//   model="openai/gpt-5.5"                botId="gpt-5.5"
 //   model="google/gemini-3-flash-preview" botId="gemini-3-flash"
 // Always carry both fields independently.
 
@@ -18,37 +20,3 @@ export interface ModelEntry {
   endpoint: UpstreamEndpoint; // which /api/chat/* endpoint serves this model
   premiumOnly?: boolean; // upstream 403s these without a premium account
 }
-
-function m(
-  provider: string,
-  model: string,
-  endpoint: UpstreamEndpoint = "azure",
-  botId?: string,
-): ModelEntry {
-  const bot = botId ?? model;
-  return {
-    id: bot,
-    modelName: model,
-    // Some feed modelNames already carry a provider slug; mirror discover()
-    // and don't double-prefix those.
-    upstreamModel: model.includes("/") ? model : `${provider}/${model}`,
-    upstreamBotId: bot,
-    provider,
-    endpoint,
-  };
-}
-
-// Deliberately all premiumOnly:false — this list is what callers get while
-// discovery is already failing, so every entry must be callable by any
-// account. Re-check against /api/models when models get retired.
-export const SEED_MODELS: ModelEntry[] = [
-  m("openai", "gpt-5.6-luna"),
-  m("deepseek", "deepseek-v4-flash"),
-  m(
-    "meta",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    "lmsys",
-    "llama-4-scout",
-  ),
-  m("perplexity", "sonar", "perplexity", "perplexity-sonar"),
-];

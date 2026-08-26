@@ -28,7 +28,7 @@ describe("isVisible", () => {
     expect(isVisible(entry(true), { PREMIUM_MODELS: "1" })).toBe(false);
   });
 
-  // SEED_MODELS entries carry no flag; they must stay visible
+  // A feed that stops sending the field must not hide everything
   it("treats a missing flag as non-premium", () => {
     expect(isVisible(entry(undefined), {})).toBe(true);
   });

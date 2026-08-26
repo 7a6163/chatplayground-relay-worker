@@ -1,4 +1,4 @@
-import { type ModelEntry, SEED_MODELS } from "../constants/models";
+import type { ModelEntry } from "../constants/models";
 
 /**
  * Resolve a caller-supplied model id.
@@ -9,7 +9,7 @@ import { type ModelEntry, SEED_MODELS } from "../constants/models";
  */
 export function findModel(
   input: string,
-  registry: ModelEntry[] = SEED_MODELS,
+  registry: ModelEntry[],
 ): ModelEntry | null {
   for (const entry of registry) {
     if (entry.id === input || entry.upstreamModel === input) return entry;

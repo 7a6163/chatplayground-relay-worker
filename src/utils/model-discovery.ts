@@ -1,6 +1,7 @@
 import { toEndpoint } from "../constants/endpoints";
-import { type ModelEntry, SEED_MODELS } from "../constants/models";
+import type { ModelEntry } from "../constants/models";
 import { DISCOVERY_TIMEOUT } from "../constants/timeouts";
+import { OpenAIHTTPError } from "./errors";
 
 const CACHE_KEY = "models:v4"; // v4: entries gained `premiumOnly`
 const KV_TTL_S = 60 * 60; // 1 hour
@@ -40,8 +41,16 @@ export async function getModels(env: DiscoveryEnv): Promise<ModelEntry[]> {
     memCache = { at: Date.now(), data: fresh };
     return fresh;
   } catch (err) {
-    console.error("Model discovery failed; using SEED fallback.", err);
-    return SEED_MODELS;
+    // No fallback list on purpose. Serving a stale hardcoded registry turned
+    // "discovery is down" into a 404 model_not_found, which tells callers the
+    // model doesn't exist when it does. 503 is the honest, retryable answer.
+    console.error("Model discovery failed.", err);
+    throw new OpenAIHTTPError(
+      503,
+      "Model registry unavailable: could not reach the upstream /api/models feed.",
+      "upstream_error",
+      "model_discovery_failed",
+    );
   }
 }
 
@@ -53,7 +62,7 @@ interface ApiModel {
   group: string;
   endpoint: string;
   // Optional on purpose: if upstream ever drops the field we still want
-  // discovery to succeed rather than fall back to SEED_MODELS.
+  // discovery to succeed rather than fail the whole request.
   premiumOnly?: boolean;
 }
 

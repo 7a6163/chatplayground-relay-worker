@@ -14,7 +14,8 @@ export interface Env {
   RELAY_API_KEY?: string;
   CLERK_USER_ID?: string;
 
-  // KV bindings (optional — discovery falls back to SEED_MODELS without them)
+  // KV bindings (optional — without MODEL_CACHE every cold isolate refetches
+  // the model feed, and a discovery failure surfaces as a 503)
   MODEL_CACHE?: KVNamespace;
   RATE_LIMIT?: KVNamespace;
 }

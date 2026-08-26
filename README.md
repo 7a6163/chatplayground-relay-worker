@@ -25,7 +25,7 @@ where possible):
 - chatplayground changes endpoint paths or request shape
 - chatplayground tightens authentication on their internal endpoint
 - chatplayground changes the `/api/models` shape in a way that breaks discovery
-  (falls back to a small SEED list on failure)
+  (`/v1/models` and chat then return 503 until it recovers)
 
 ## Authentication: bring your own Clerk user ID
 
@@ -149,9 +149,9 @@ npm run deploy
 
 ### Optional: KV-backed model cache
 
-Without KV, model discovery falls back to a 5-minute per-isolate memory cache
-plus a hardcoded SEED fallback list. That's fine for personal use. For shared
-deployments you can add KV:
+Without KV, model discovery has only a 5-minute per-isolate memory cache, so
+every cold isolate refetches the feed and an upstream blip surfaces as a 503.
+That's fine for personal use. For shared deployments you can add KV:
 
 ```bash
 npx wrangler kv namespace create MODEL_CACHE
@@ -283,7 +283,11 @@ Cloudflare Worker (Hono)
    **not** filtered on — it controls UI visibility only; inactive models are
    still callable upstream. Each entry's `endpoint` field decides which of the
    three `/api/chat/*` upstreams serves it.
-4. **SEED fallback** — small hardcoded list, used if discovery fails
+If all three miss, the request fails with **503** `model_discovery_failed`.
+There is deliberately no hardcoded fallback list: it would be a copy of data
+that lives upstream, so it rots unnoticed and only gets used on the day
+discovery is already broken — and serving it turned "discovery is down" into a
+404 `model_not_found`, which tells callers a model doesn't exist when it does.
 
 The registry cached at every layer is the **full** list. `premiumOnly` is
 filtered at read time in the `/v1/models` handler, so flipping
@@ -297,7 +301,7 @@ TTL. Note the gate is `premiumOnly`, not the feed's `tier` field:
 src/
 ├── index.ts                  Hono app + CORS + auth + route mounting
 ├── constants/
-│   ├── models.ts             SEED fallback registry
+│   ├── models.ts             ModelEntry shape (no hardcoded list)
 │   └── timeouts.ts           CHAT / UPLOAD / DISCOVERY fetch timeouts
 ├── middleware/
 │   ├── auth.ts               Bearer / X-Clerk-User-Id → ctx.clerkUserId
