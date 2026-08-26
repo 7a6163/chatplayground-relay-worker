@@ -67,6 +67,13 @@ interface ApiModel {
 }
 
 async function discover(chatUrl: string): Promise<ModelEntry[]> {
+  // Fetched WITHOUT the Clerk id on purpose. /api/models is a public static
+  // catalogue: the response is byte-identical with and without an
+  // X-Clerk-User-Id header, so sending one buys nothing. Upstream personalises
+  // nothing here — it ships the raw flags (premiumOnly, lifetimeOnly, tier,
+  // creditWeight) and lets its own frontend do the filtering, which is why
+  // this relay has to filter too.
+  //
   // /api/chat/azure → /api/models (sibling under /api/)
   const url = new URL("../models", chatUrl);
   const res = await fetch(url, {
@@ -132,6 +139,13 @@ function isApiModel(v: unknown): v is ApiModel {
 // models where the two fields disagree (tier=basic + premiumOnly=true):
 // gemini-3.7-flash, gemini-3.6-flash and grok-4.6 all 403. No model is
 // tier=advanced without also being premiumOnly, so tier is never the gate.
+//
+// Manual flag, not auto-detected, because upstream exposes no entitlement to
+// detect from: the catalogue is impersonal (see discover()), and every /api/*
+// route answers 401 to an unauthenticated caller whether or not it exists, so
+// probing for an account endpoint proves nothing. Access only becomes
+// observable by making a chat call and reading the 403 — which is a
+// credit-spending side effect no /v1/models request should have.
 //
 // `lifetimeOnly` is not read, and that is not a claim about what it means.
 // Only one such model was ever tested and it succeeded, which cannot tell a

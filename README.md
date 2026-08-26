@@ -291,6 +291,13 @@ that lives upstream, so it rots unnoticed and only gets used on the day
 discovery is already broken — and serving it turned "discovery is down" into a
 404 `model_not_found`, which tells callers a model doesn't exist when it does.
 
+`/api/models` is fetched **without** the Clerk id: it is a public catalogue and
+returns the same bytes with or without one. Upstream ships the raw flags and
+lets its own frontend filter, so there is no per-account entitlement to query —
+which is why `PREMIUM_MODELS` is something you set rather than something the
+relay works out. Access is only observable by making a chat call and reading
+the 403, and a model listing shouldn't spend credits to find out.
+
 The registry cached at every layer is the **full** list. `premiumOnly` is
 filtered at read time in the `/v1/models` handler, so flipping
 `PREMIUM_MODELS` takes effect immediately rather than waiting out the 1 h KV
