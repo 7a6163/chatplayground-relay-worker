@@ -142,18 +142,44 @@ npm run dev
 # → http://localhost:8787
 ```
 
+No secrets are needed to run it: auth is BYOK, the caller supplies the Clerk
+id. Copy `.dev.vars.example` to `.dev.vars` only if you want to point local dev
+at a different upstream.
+
 ### Deploy to Cloudflare
 
 ```bash
+npx wrangler login     # opens a browser; needed once per machine
 npm run deploy
 # → https://chatplayground-relay.<your-account>.workers.dev
 ```
 
-### Optional: KV-backed model cache
+Then smoke-test it — this is the fastest way to tell a broken deploy from a
+broken upstream:
 
-Without KV, model discovery has only a 5-minute per-isolate memory cache, so
-every cold isolate refetches the feed and an upstream blip surfaces as a 503.
-That's fine for personal use. For shared deployments you can add KV:
+```bash
+curl -s https://chatplayground-relay.<acct>.workers.dev/v1/models \
+     -H "Authorization: Bearer user_YOUR_CLERK_ID" | jq '.data | length'
+```
+
+A number is a working deploy. `503 model_discovery_failed` means the worker is
+up but couldn't reach the upstream feed. `401` means the Bearer token isn't a
+well-formed `user_...` id.
+
+Two optional follow-ups, in the order they usually matter:
+
+**Gateway mode** — if anyone but you will call it, set the two secrets from
+[gateway mode](#optional-gateway-mode-custom-api-key-hidden-clerk-id) so your
+Clerk id stays server-side.
+
+**`PREMIUM_MODELS`** — leave it unset unless the account has premium; see
+[Configuration](#configuration).
+
+### KV-backed model cache
+
+There is no hardcoded fallback list, so without KV a discovery failure is a
+503 and every cold isolate refetches the feed. A single-user deploy survives
+that fine; anything shared should add KV:
 
 ```bash
 npx wrangler kv namespace create MODEL_CACHE
