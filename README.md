@@ -85,11 +85,14 @@ that routing automatically, so a single OpenAI `model` field reaches the right
 one. Models chatplayground marks `active:false` are still exposed — that flag
 is UI visibility only, and inactive models remain callable upstream.
 
-Models the feed marks `premiumOnly` are **hidden from `GET /v1/models` by
-default**, because upstream returns 403 for them unless the account has
-premium. Set `PREMIUM_MODELS="true"` to list them too. They stay callable
-either way — the filter only changes what the relay advertises, and upstream
-remains the thing that enforces access.
+The default list targets a **lifetime unlimited** account, since that is who
+runs this relay. Models the feed marks `premiumOnly` are hidden from `GET
+/v1/models`, because upstream returns 403 for them without a premium plan;
+set `PREMIUM_MODELS="true"` to list them anyway. Everything else is shown,
+including the three `lifetimeOnly` models — a lifetime account can call those,
+so the default list is exactly its entitlement. They stay callable either way:
+the filter only changes what the relay advertises, and upstream remains the
+thing that enforces access.
 
 Snapshot of the feed (call `GET /v1/models` for the live set):
 
@@ -355,8 +358,11 @@ Optional KV bindings:
    premium. They're hidden from `GET /v1/models` by default but stay callable,
    so a hardcoded id returns HTTP 403 `upstream_403`. The gate is `premiumOnly`,
    not the feed's `tier` field — `gemini-3.7-flash` is `tier:"basic"` and still
-   403s. Models flagged `lifetimeOnly` need a lifetime plan but are not
-   `premiumOnly`, so they are listed by default.
+   403s — verified on all three models where the two fields disagree.
+   Models flagged `lifetimeOnly` need a lifetime plan but are not
+   `premiumOnly`, so they are listed by default. On a **non**-lifetime account
+   those three (`claude-sonnet-4-6`, `gemini-3.5-flash-lite`, `kimi-k2.6`)
+   will 403; there is no switch to hide them, by design.
 4. **Brittle to upstream changes.** Any change to `/api/models` shape, endpoint
    path, or request shape may break the worker. Open an issue / PR.
 5. **`/v1/files` is essentially anonymous.** chatplayground's upload

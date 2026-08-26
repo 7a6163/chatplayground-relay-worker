@@ -124,10 +124,19 @@ function isApiModel(v: unknown): v is ApiModel {
   );
 }
 
-// Which models `/v1/models` advertises. Upstream gates on `premiumOnly` (not
-// on `tier`: gemini-3.7-flash is tier=basic yet 403s), so a non-premium
-// account only sees the models it can actually call. Unset → non-premium.
-// Chat requests are never filtered — upstream is the one enforcing this.
+// Which models `/v1/models` advertises. The default target is a lifetime
+// unlimited account — that is who runs this relay — so the default list is
+// exactly what such an account can call: everything except `premiumOnly`,
+// including the three `lifetimeOnly` models.
+//
+// Upstream gates on `premiumOnly`, NOT on `tier`. Verified against all three
+// models where the two fields disagree (tier=basic + premiumOnly=true):
+// gemini-3.7-flash, gemini-3.6-flash and grok-4.6 all 403. No model is
+// tier=advanced without also being premiumOnly, so tier is never the gate.
+//
+// `lifetimeOnly` is deliberately not read: it does not gate this audience,
+// and a knob to hide those three would serve a user this relay doesn't have.
+// Chat requests are never filtered — upstream is the one enforcing access.
 export function isVisible(
   m: ModelEntry,
   env: { PREMIUM_MODELS?: string },
