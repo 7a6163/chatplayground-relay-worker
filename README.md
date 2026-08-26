@@ -360,11 +360,22 @@ Optional KV bindings:
 2. **No real usage counts.** chatplayground doesn't return token usage, so
    the `usage` field is estimated (chars ÷ 4). Don't bill on it.
 3. **Premium models 403 on a non-premium account.** The feed marks 12 of its
-   33 chat models `premiumOnly`; upstream rejects them unless the account has
+   33 chat models `premiumOnly`; upstream rejects those unless the account has
    premium. They're hidden from `GET /v1/models` by default but stay callable,
-   so a hardcoded id returns HTTP 403 `upstream_403`. The gate is `premiumOnly`,
-   not the feed's `tier` field — `gemini-3.7-flash` is `tier:"basic"` and still
-   403s — verified on all three models where the two fields disagree.
+   so a hardcoded id returns HTTP 403 `upstream_403` and upstream's own wording:
+
+   > This model is only available to active subscribers.
+
+   Note it says **active subscriber**, not "premium" or "advanced" — quote that
+   line at support rather than describing the symptom, it names their field.
+
+   The gate is `premiumOnly`, and not the feed's `tier` field:
+   `gemini-3.7-flash` is `tier:"basic"` and 403s anyway. All 33 chat models
+   were called once to establish this — every `premiumOnly:true` model was
+   rejected and every reachable `premiumOnly:false` one succeeded, no
+   exceptions. `creditWeight` is not the gate either (weight 7 succeeded while
+   weight 2 was rejected). Re-derive none of this from the flag names; the
+   feed's `active` flag, for instance, is enforced nowhere.
 4. **Upstream rate-limits bursts.** A run of back-to-back chat calls starts
    returning `429 You're sending prompts too quickly`, with no `Retry-After`
    header to pace against. The relay passes 429 through unchanged so the
