@@ -60,14 +60,21 @@ export function upstreamError(
   upstreamStatus: number,
   message: string,
 ): OpenAIHTTPError {
-  // 401/403 are terminal: a bad Clerk ID, or a model the account isn't
-  // entitled to. Folding them into 502 makes OpenAI-compatible clients treat
-  // them as a transient outage and retry with backoff, forever.
-  const denied = upstreamStatus === 401 || upstreamStatus === 403;
+  // These mean "this request was rejected", not "the gateway broke", so they
+  // keep their own status. Folding them into 502 makes OpenAI-compatible
+  // clients mishandle both: a permission failure gets retried forever, and a
+  // rate limit never reaches the SDK's RateLimitError backoff path.
+  // Upstream sends no Retry-After with its 429, so there is none to forward.
+  const passthrough: Record<number, string> = {
+    401: "permission_denied",
+    403: "permission_denied",
+    429: "rate_limit_error",
+  };
+  const type = passthrough[upstreamStatus];
   return new OpenAIHTTPError(
-    denied ? upstreamStatus : 502,
+    type ? upstreamStatus : 502,
     message,
-    denied ? "permission_denied" : "upstream_error",
+    type ?? "upstream_error",
     `upstream_${upstreamStatus}`,
   );
 }

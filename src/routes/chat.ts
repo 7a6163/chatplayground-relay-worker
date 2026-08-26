@@ -54,9 +54,16 @@ chat.post("/v1/chat/completions", async (c) => {
   });
 
   if (!upstream.ok || !upstream.body) {
+    // Forward upstream's own wording rather than guessing at the cause. It is
+    // plain text and specific ("This model is only available to active
+    // subscribers", "You're sending prompts too quickly"), where a guessed
+    // list of likely causes sends people after the wrong one.
+    const detail = (await upstream.text().catch(() => "")).trim();
     throw upstreamError(
       upstream.status,
-      `Upstream returned ${upstream.status}. Most likely cause: a premiumOnly model the account cannot use, an invalid X-Clerk-User-Id, or an upstream outage.`,
+      detail
+        ? `Upstream returned ${upstream.status}: ${detail.slice(0, 300)}`
+        : `Upstream returned ${upstream.status} with no message.`,
     );
   }
 

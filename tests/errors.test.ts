@@ -10,8 +10,15 @@ describe("upstreamError", () => {
     expect(upstreamError(401, "x").status).toBe(401);
   });
 
+  // Observed live: upstream rate-limits a burst of chat calls. 502 would keep
+  // the SDK's RateLimitError backoff from ever engaging.
+  it("passes 429 through as a rate limit", () => {
+    expect(upstreamError(429, "x").status).toBe(429);
+    expect(upstreamError(429, "x").type).toBe("rate_limit_error");
+  });
+
   it("still maps other upstream failures to 502", () => {
-    for (const s of [500, 502, 503, 429]) {
+    for (const s of [500, 502, 503, 504]) {
       expect(upstreamError(s, "x").status).toBe(502);
       expect(upstreamError(s, "x").type).toBe("upstream_error");
     }
