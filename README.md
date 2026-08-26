@@ -67,7 +67,7 @@ plaintext.)
 | Endpoint | Notes |
 |---|---|
 | `POST /v1/chat/completions` | Stream + non-stream; multimodal (`image_url` content parts) |
-| `GET /v1/models` | Dynamic discovery from chatplayground's `/api/models`, KV + memory cached |
+| `GET /v1/models` | Dynamic discovery from chatplayground's `/api/models`, KV + memory cached; `premiumOnly` models hidden unless `PREMIUM_MODELS="true"` |
 | `POST /v1/files` | Image upload proxy → returns a URL usable as `image_url.url` |
 
 | Not supported | Why |
@@ -173,13 +173,13 @@ curl -s $WORKER/v1/models -H "Authorization: Bearer $KEY" | jq
 curl -s $WORKER/v1/chat/completions \
      -H "Authorization: Bearer $KEY" \
      -H "Content-Type: application/json" \
-     -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"say hi"}]}' | jq
+     -d '{"model":"gpt-5.6-luna","messages":[{"role":"user","content":"say hi"}]}' | jq
 
 # Streaming
 curl -N $WORKER/v1/chat/completions \
      -H "Authorization: Bearer $KEY" \
      -H "Content-Type: application/json" \
-     -d '{"model":"gemini-3-flash","messages":[{"role":"user","content":"count to 5"}],"stream":true}'
+     -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"count to 5"}],"stream":true}'
 ```
 
 ### OpenAI Python SDK
@@ -194,14 +194,14 @@ client = OpenAI(
 
 # Text
 resp = client.chat.completions.create(
-    model="gpt-5.5",
+    model="gpt-5.6-luna",
     messages=[{"role": "user", "content": "What is use-after-free?"}],
 )
 print(resp.choices[0].message.content)
 
 # Streaming
 for chunk in client.chat.completions.create(
-    model="gpt-5.5",
+    model="gpt-5.6-luna",
     messages=[{"role": "user", "content": "Count to 5"}],
     stream=True,
 ):
@@ -210,7 +210,7 @@ for chunk in client.chat.completions.create(
 # Vision — upload via /v1/files, then reference
 file = client.files.create(file=open("photo.jpg", "rb"), purpose="vision")
 resp = client.chat.completions.create(
-    model="gemini-3-flash",
+    model="llama-4-scout",
     messages=[{
         "role": "user",
         "content": [
@@ -350,13 +350,20 @@ Optional KV bindings:
    reply. The relay also never forwards `tools` / `tool_choice` upstream.
 2. **No real usage counts.** chatplayground doesn't return token usage, so
    the `usage` field is estimated (chars ÷ 4). Don't bill on it.
-3. **Brittle to upstream changes.** Any change to `/api/models` shape, endpoint
+3. **Premium models 403 on a non-premium account.** The feed marks 12 of its
+   33 chat models `premiumOnly`; upstream rejects them unless the account has
+   premium. They're hidden from `GET /v1/models` by default but stay callable,
+   so a hardcoded id returns HTTP 403 `upstream_403`. The gate is `premiumOnly`,
+   not the feed's `tier` field — `gemini-3.7-flash` is `tier:"basic"` and still
+   403s. Models flagged `lifetimeOnly` need a lifetime plan but are not
+   `premiumOnly`, so they are listed by default.
+4. **Brittle to upstream changes.** Any change to `/api/models` shape, endpoint
    path, or request shape may break the worker. Open an issue / PR.
-4. **`/v1/files` is essentially anonymous.** chatplayground's upload
+5. **`/v1/files` is essentially anonymous.** chatplayground's upload
    endpoint accepts any caller (no auth), and our Bearer regex is a speed
    bump, not a gate. If you deploy publicly and care about your worker's
    request quota, add a size cap or remove the route.
-5. **Keep your Clerk user ID private.** It grants access to your
+6. **Keep your Clerk user ID private.** It grants access to your
    chatplayground account quota; treat it like an API key.
 
 ## License
