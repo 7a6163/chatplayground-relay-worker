@@ -29,16 +29,26 @@ function m(
   return {
     id: bot,
     modelName: model,
-    upstreamModel: `${provider}/${model}`,
+    // Some feed modelNames already carry a provider slug; mirror discover()
+    // and don't double-prefix those.
+    upstreamModel: model.includes("/") ? model : `${provider}/${model}`,
     upstreamBotId: bot,
     provider,
     endpoint,
   };
 }
 
+// Deliberately all premiumOnly:false — this list is what callers get while
+// discovery is already failing, so every entry must be callable by any
+// account. Re-check against /api/models when models get retired.
 export const SEED_MODELS: ModelEntry[] = [
-  m("openai", "gpt-5.5"),
-  m("openai", "gpt-5.4"),
-  m("google", "gemini-3-flash-preview", "azure", "gemini-3-flash"),
-  m("perplexity", "sonar-pro", "perplexity", "perplexity-sonar-pro"),
+  m("openai", "gpt-5.6-luna"),
+  m("deepseek", "deepseek-v4-flash"),
+  m(
+    "meta",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "lmsys",
+    "llama-4-scout",
+  ),
+  m("perplexity", "sonar", "perplexity", "perplexity-sonar"),
 ];

@@ -90,6 +90,14 @@ async function discover(chatUrl: string): Promise<ModelEntry[]> {
       premiumOnly: e.premiumOnly === true,
     });
   }
+  // The /v1/models filter is the only consumer of premiumOnly. If upstream
+  // renames or drops the field, every model silently becomes non-premium and
+  // that wrong registry sits in KV for an hour. Loud beats silently wrong.
+  if (out.length > 0 && !out.some((e) => e.premiumOnly)) {
+    console.error(
+      "No premiumOnly:true entries in /api/models — field may have changed shape.",
+    );
+  }
   return out;
 }
 

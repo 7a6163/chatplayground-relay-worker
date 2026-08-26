@@ -82,22 +82,45 @@ plaintext.)
 chatplayground serves chat models from **three upstream endpoints**
 (`azure` / `perplexity` / `lmsys`), routed by model `botId`. The relay mirrors
 that routing automatically, so a single OpenAI `model` field reaches the right
-one. It exposes **every chat-group model** in the feed — including models
-chatplayground marks `active:false` (hidden in their UI but still callable
-upstream, e.g. perplexity `sonar-pro`).
+one. Models chatplayground marks `active:false` are still exposed — that flag
+is UI visibility only, and inactive models remain callable upstream.
 
-Some commonly-available ids (call `GET /v1/models` for the live set):
+Models the feed marks `premiumOnly` are **hidden from `GET /v1/models` by
+default**, because upstream returns 403 for them unless the account has
+premium. Set `PREMIUM_MODELS="true"` to list them too. They stay callable
+either way — the filter only changes what the relay advertises, and upstream
+remains the thing that enforces access.
 
-| Model id (use this in `model` field) | Provider | Endpoint | Vision |
-|---|---|---|---|
-| `gpt-5.5` | openai | azure | ✅ |
-| `gpt-5.4` | openai | azure | ✅ |
-| `gemini-3-flash` | google | azure | ✅ |
-| `claude-haiku-4-5` | anthropic | azure | ✅ |
-| `deepseek-v4-pro` | deepseek | azure | — |
-| `kimi-k2.6` | moonshot | azure | — |
-| `perplexity-sonar-pro` | perplexity | perplexity | — |
-| `llama-4-scout` | meta | lmsys | ✅ |
+Snapshot of the feed (call `GET /v1/models` for the live set):
+
+| Model id (use this in `model` field) | Provider | Endpoint | Vision | Access |
+|---|---|---|---|---|
+| `gpt-5.6-terra` | openai | azure | ✅ | — |
+| `gpt-5.6-luna` | openai | azure | ✅ | — |
+| `mistral-large-3` | mistral | azure | ✅ | — |
+| `deepseek-v4-pro` | deepseek | azure | — | — |
+| `deepseek-v4-flash` | deepseek | azure | — | — |
+| `deepseek-r1` | deepseek | azure | — | — |
+| `llama-4-scout` | meta | lmsys | ✅ | — |
+| `llama-4-maverick` | meta | lmsys | ✅ | — |
+| `grok-4.5` | xai | lmsys | ✅ | — |
+| `qwen3.7-plus` | qwen | lmsys | ✅ | — |
+| `minimax-m3` | minimax | lmsys | ✅ | — |
+| `command-a` | cohere | lmsys | ✅ | — |
+| `perplexity-sonar` | perplexity | perplexity | ✅ | — |
+| `claude-sonnet-4-6` | anthropic | azure | ✅ | lifetime |
+| `gemini-3.5-flash-lite` | google | azure | ✅ | lifetime |
+| `kimi-k2.6` | kimi | azure | ✅ | lifetime |
+| `claude-opus-5` | anthropic | azure | ✅ | premium |
+| `claude-sonnet-5` | anthropic | azure | ✅ | premium |
+| `gpt-5.6-sol` | openai | azure | ✅ | premium |
+| `gemini-3.1-pro` | google | azure | ✅ | premium |
+| `grok-4.6` | xai | lmsys | ✅ | premium |
+| `perplexity-sonar-pro` | perplexity | perplexity | ✅ | premium |
+
+`lifetime` = the feed's `lifetimeOnly` flag; those need a lifetime plan but
+are **not** `premiumOnly`, so they are listed by default. Truncated — the feed
+carried 33 chat models when this was written, 12 of them `premiumOnly`.
 
 > Perplexity models return a structured citation list at the end of the
 > stream. The relay strips that raw payload and re-emits the URLs as a
@@ -256,11 +279,17 @@ Cloudflare Worker (Hono)
 2. **KV cache** (1 h TTL) — hits across isolates if `MODEL_CACHE` binding is configured
 3. **Live discovery** — `GET app.chatplayground.ai/api/models` (public JSON,
    no auth), validate each entry (`{botId, modelName, provider, group,
-   endpoint, active}`), keep `group:"chat"`. The `active` flag is **not**
-   filtered on — it controls UI visibility only; inactive models are still
-   callable upstream. Each entry's `endpoint` field decides which of the three
-   `/api/chat/*` upstreams serves it.
+   endpoint, active, premiumOnly}`), keep `group:"chat"`. The `active` flag is
+   **not** filtered on — it controls UI visibility only; inactive models are
+   still callable upstream. Each entry's `endpoint` field decides which of the
+   three `/api/chat/*` upstreams serves it.
 4. **SEED fallback** — small hardcoded list, used if discovery fails
+
+The registry cached at every layer is the **full** list. `premiumOnly` is
+filtered at read time in the `/v1/models` handler, so flipping
+`PREMIUM_MODELS` takes effect immediately rather than waiting out the 1 h KV
+TTL. Note the gate is `premiumOnly`, not the feed's `tier` field:
+`gemini-3.7-flash` is `tier:"basic"` and still 403s without premium.
 
 ## Project layout
 
@@ -300,6 +329,7 @@ different upstream instance.
 | `UPSTREAM_ORIGIN` | `https://web.chatplayground.ai` | Forwarded as `Origin` |
 | `UPSTREAM_REFERER` | `https://web.chatplayground.ai/` | Forwarded as `Referer` |
 | `UPSTREAM_UPLOAD_URL` | `https://temp-file-host.chatplayground.ai/upload` | File upload endpoint |
+| `PREMIUM_MODELS` | unset | `"true"` lists `premiumOnly` models in `GET /v1/models`. Leave unset unless the account has premium — upstream 403s them otherwise. Any other value counts as off |
 
 Optional KV bindings:
 

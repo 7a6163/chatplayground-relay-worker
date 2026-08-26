@@ -56,7 +56,7 @@ chat.post("/v1/chat/completions", async (c) => {
   if (!upstream.ok || !upstream.body) {
     throw upstreamError(
       upstream.status,
-      `Upstream returned ${upstream.status}. Most likely cause: invalid X-Clerk-User-Id, unsupported model, or upstream outage.`,
+      `Upstream returned ${upstream.status}. Most likely cause: a premiumOnly model the account cannot use, an invalid X-Clerk-User-Id, or an upstream outage.`,
     );
   }
 

@@ -60,10 +60,14 @@ export function upstreamError(
   upstreamStatus: number,
   message: string,
 ): OpenAIHTTPError {
+  // 401/403 are terminal: a bad Clerk ID, or a model the account isn't
+  // entitled to. Folding them into 502 makes OpenAI-compatible clients treat
+  // them as a transient outage and retry with backoff, forever.
+  const denied = upstreamStatus === 401 || upstreamStatus === 403;
   return new OpenAIHTTPError(
-    502,
+    denied ? upstreamStatus : 502,
     message,
-    "upstream_error",
+    denied ? "permission_denied" : "upstream_error",
     `upstream_${upstreamStatus}`,
   );
 }
