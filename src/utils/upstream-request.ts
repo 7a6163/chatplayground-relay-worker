@@ -73,14 +73,14 @@ export interface UpstreamHeaderEnv {
 }
 
 export function buildUpstreamHeaders(
-  clerkUserId: string,
+  sessionToken: string,
   env: UpstreamHeaderEnv,
 ): HeadersInit {
   // text/plain bypasses CORS preflight — chatplayground's frontend uses this
   // exact content-type and the backend enforces it.
   return {
     "content-type": "text/plain;charset=UTF-8",
-    "x-clerk-user-id": clerkUserId,
+    authorization: `Bearer ${sessionToken}`,
     origin: env.UPSTREAM_ORIGIN,
     referer: env.UPSTREAM_REFERER,
     accept: "*/*",
