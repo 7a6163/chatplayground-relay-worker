@@ -44,11 +44,11 @@ chat.post("/v1/chat/completions", async (c) => {
   if (!model) throw modelNotFound(body.model);
 
   const { endpoint, body: upstreamBody } = buildUpstreamRequest(body, model);
-  const clerkUserId = c.get("clerkUserId");
+  const sessionToken = await c.get("sessionToken")();
 
   const upstream = await fetch(endpointUrl(endpoint, c.env.UPSTREAM_CHAT_URL), {
     method: "POST",
-    headers: buildUpstreamHeaders(clerkUserId, c.env),
+    headers: buildUpstreamHeaders(sessionToken, c.env),
     body: JSON.stringify(upstreamBody),
     signal: AbortSignal.timeout(CHAT_TIMEOUT),
   });

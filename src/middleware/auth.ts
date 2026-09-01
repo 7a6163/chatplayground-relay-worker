@@ -1,8 +1,12 @@
 import { createMiddleware } from "hono/factory";
 import type { Env, Variables } from "../types/env";
+import { mintSessionToken } from "../utils/clerk-token";
 import { unauthorized } from "../utils/errors";
 
-const CLERK_USER_ID_RE = /^user_[a-zA-Z0-9]+$/;
+// Upstream now authenticates with a Clerk session JWT (the old
+// `x-clerk-user-id` header 401s on /api/chat/*). Shape check only — upstream
+// is the one that verifies the signature.
+const JWT_RE = /^[\w-]+\.[\w-]+\.[\w-]+$/;
 
 export const auth = createMiddleware<{
   Bindings: Env;
@@ -14,36 +18,31 @@ export const auth = createMiddleware<{
     .trim();
 
   // Gateway mode: if RELAY_API_KEY is configured, the caller must present it and
-  // the worker uses its own stored CLERK_USER_ID upstream — the caller never
-  // sees (or needs) the real chatplayground identity.
+  // the worker mints its own session token from the stored Clerk `__client`
+  // cookie — the caller never sees (or needs) the real chatplayground identity.
   const gatewayKey = c.env.RELAY_API_KEY;
   if (gatewayKey) {
     if (!bearer || !safeEqual(bearer, gatewayKey)) {
       throw unauthorized("Invalid API key.");
     }
-    const clerkId = c.env.CLERK_USER_ID ?? "";
-    if (!CLERK_USER_ID_RE.test(clerkId)) {
-      // Only reachable by an authorized caller — safe to surface as config error.
-      throw unauthorized(
-        "Relay misconfigured: CLERK_USER_ID secret is missing or malformed.",
-      );
-    }
-    c.set("clerkUserId", clerkId);
+    // Deferred, not minted here: /v1/models and /v1/files need no upstream
+    // credential, so they must not pay two Clerk round-trips on a cold isolate
+    // — or fail when Clerk does. mintSessionToken caches, so chat pays once.
+    c.set("sessionToken", () => mintSessionToken(c.env));
     await next();
     return;
   }
 
-  // Passthrough mode (default): caller supplies their own Clerk ID.
-  const fromHeader = c.req.header("x-clerk-user-id")?.trim();
-  const id = bearer || fromHeader || "";
-
-  if (!CLERK_USER_ID_RE.test(id)) {
+  // Passthrough mode (default): caller supplies their own session JWT, which
+  // expires 60 seconds after Clerk issues it — refreshing is the client's job.
+  const token = bearer || "";
+  if (!JWT_RE.test(token)) {
     throw unauthorized(
-      "Missing or malformed credentials. Send your chatplayground Clerk user ID (user_...) as `Authorization: Bearer <id>` or `X-Clerk-User-Id: <id>`.",
+      "Missing or malformed credentials. Send a chatplayground Clerk session token (a JWT) as `Authorization: Bearer <jwt>`.",
     );
   }
 
-  c.set("clerkUserId", id);
+  c.set("sessionToken", async () => token);
   await next();
 });
 

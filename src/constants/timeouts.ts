@@ -13,3 +13,6 @@ export const UPLOAD_TIMEOUT = 60_000;
 
 /** Model discovery (single /api/models JSON fetch). */
 export const DISCOVERY_TIMEOUT = 10_000;
+
+/** Clerk session-token mint (gateway mode). One small JSON POST. */
+export const CLERK_TOKEN_TIMEOUT = 10_000;

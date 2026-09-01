@@ -1,6 +1,6 @@
 {
   "name": "chatplayground-relay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenAI-compatible Cloudflare Worker relay for chatplayground.ai (BYOK, stateless)",
   "type": "module",
   "scripts": {

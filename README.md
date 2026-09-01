@@ -27,40 +27,76 @@ where possible):
 - chatplayground changes the `/api/models` shape in a way that breaks discovery
   (`/v1/models` and chat then return 503 until it recovers)
 
-## Authentication: bring your own Clerk user ID
+## Authentication: bring your own Clerk session token
 
-You provide your chatplayground Clerk user ID (looks like `user_xxxxxxxxxxxxx`)
-as the OpenAI-style Bearer token. The worker forwards it to upstream as
-`X-Clerk-User-Id`.
+Upstream authenticates with a **Clerk session token** — a JWT you send as the
+OpenAI-style Bearer token, forwarded verbatim as `Authorization: Bearer <jwt>`.
+(The old `X-Clerk-User-Id` header no longer works: `/api/chat/*` 401s on it.)
 
-**How to find your Clerk user ID:**
+**How to find your session token:**
 
 1. Open <https://web.chatplayground.ai/> and sign in
 2. Open DevTools → Network tab
 3. Send any message in the UI
 4. Find the request to `/api/chat/azure`
-5. Copy the value of the `X-Clerk-User-Id` request header
+5. Copy the `Authorization` header value (the `eyJ...` JWT)
 
-> ⚠️ **Treat your Clerk user ID like an API key.**
-> It grants access to your chatplayground account quota.
-> Don't share it. Don't post your worker URL publicly without thinking.
+> ⚠️ **These tokens expire 60 seconds after Clerk issues them.**
+> A copy-pasted JWT is fine for one `curl`, useless for a long-lived client.
+> For anything ongoing use gateway mode below, which mints a fresh token per
+> request from a cookie that lasts months.
 
-### Optional: gateway mode (custom API key, hidden Clerk ID)
+> ⚠️ **Treat the token like an API key.** It grants access to your
+> chatplayground account quota for as long as it lives.
 
-Passthrough mode hands your Clerk ID to every client. If you'd rather keep the
-Clerk ID server-side and give callers a custom key you can rotate, set two
-secrets:
+### Gateway mode (custom API key, auto-refreshing credential)
+
+Because a session JWT dies in 60 seconds, it cannot be stored as a secret. What
+*can* be stored is Clerk's `__client` cookie; the worker mints a fresh session
+token from it exactly as the web app does (cached per isolate, refreshed 15s
+before expiry). Set two secrets:
 
 ```bash
-wrangler secret put CLERK_USER_ID    # your real user_... identity
-wrangler secret put RELAY_API_KEY    # a key you invent, e.g. sk-relay-xxxxx
+wrangler secret put CLERK_CLIENT_COOKIE  # value of the `__client` cookie
+wrangler secret put RELAY_API_KEY        # a key you invent, e.g. sk-relay-xxxxx
 ```
 
+**Where the cookie comes from:** DevTools → Application → Cookies →
+`https://clerk.chatplayground.ai` → copy `__client`.
+
+The session id is *not* configured. It cannot be decoded out of the cookie
+(which holds only `id` + `rotating_token`), so the worker asks Clerk for it —
+`GET /v1/client` → the active session, resolved once per isolate and cached
+alongside the token. That also means a new session on the same client is picked
+up on its own, where a pinned `sess_...` would have gone stale.
+
 Once `RELAY_API_KEY` is set, callers authenticate with **that** key
-(`Authorization: Bearer sk-relay-xxxxx`) and the worker uses the stored
-`CLERK_USER_ID` upstream — the real identity is never exposed. Unset the secret
-to fall back to passthrough. (Secrets, not `wrangler.jsonc` vars — vars are
-plaintext.)
+(`Authorization: Bearer sk-relay-xxxxx`) and never see the real credential.
+Unset it to fall back to passthrough. (Secrets, not `wrangler.jsonc` vars —
+vars are plaintext.)
+
+#### How long does the cookie last?
+
+Ignore the expiry date the browser shows on it — that is the browser's own
+`Expires` attribute, and the value you copied is a JWT with **no `exp` claim**:
+
+```json
+{ "id": "client_xxxxxxxx", "rotating_token": "r0cm2k7z..." }
+```
+
+Validity is decided server-side by Clerk's client record and that
+`rotating_token`, so the cookie does not die of old age — it dies when Clerk
+**rotates** it (sign-out, re-sign-in, handshake events). Minting session tokens
+does not rotate it; that was checked against the live API.
+
+When Clerk *does* rotate, it returns the replacement in `Set-Cookie`, and the
+worker writes it to KV (`clerk:client_cookie`) so the next isolate uses the live
+value instead of the dead secret. **That survival depends on the `MODEL_CACHE`
+KV binding being enabled** — see [KV-backed model cache](#kv-backed-model-cache).
+Without it, a rotation means gateway mode 401s until you re-capture the cookie
+by hand. A stale KV copy is self-healing: it's dropped and the secret retried
+once, so re-running `wrangler secret put CLERK_CLIENT_COOKIE` always takes
+effect.
 
 ## Features
 
@@ -142,8 +178,8 @@ npm run dev
 # → http://localhost:8787
 ```
 
-No secrets are needed to run it: auth is BYOK, the caller supplies the Clerk
-id. Copy `.dev.vars.example` to `.dev.vars` only if you want to point local dev
+No secrets are needed to run it: auth is BYOK, the caller supplies the session
+token. Copy `.dev.vars.example` to `.dev.vars` only if you want to point local dev
 at a different upstream.
 
 ### Deploy to Cloudflare
@@ -159,27 +195,29 @@ broken upstream:
 
 ```bash
 curl -s https://chatplayground-relay.<acct>.workers.dev/v1/models \
-     -H "Authorization: Bearer user_YOUR_CLERK_ID" | jq '.data | length'
+     -H "Authorization: Bearer eyJYOUR.SESSION.JWT" | jq '.data | length'
 ```
 
 A number is a working deploy. `503 model_discovery_failed` means the worker is
 up but couldn't reach the upstream feed. `401` means the Bearer token isn't a
-well-formed `user_...` id.
+well-formed JWT.
 
 Two optional follow-ups, in the order they usually matter:
 
 **Gateway mode** — if anyone but you will call it, set the two secrets from
-[gateway mode](#optional-gateway-mode-custom-api-key-hidden-clerk-id) so your
-Clerk id stays server-side.
+[gateway mode](#gateway-mode-custom-api-key-auto-refreshing-credential) so
+callers get a stable key and the credential refreshes itself.
 
 **`PREMIUM_MODELS`** — leave it unset unless the account has premium; see
 [Configuration](#configuration).
 
 ### KV-backed model cache
 
-There is no hardcoded fallback list, so without KV a discovery failure is a
-503 and every cold isolate refetches the feed. A single-user deploy survives
-that fine; anything shared should add KV:
+The `MODEL_CACHE` namespace does double duty: the model registry, and the
+rotated `__client` cookie in gateway mode. There is no hardcoded fallback list,
+so without KV a discovery failure is a 503, every cold isolate refetches the
+feed, and a Clerk cookie rotation has to be repaired by hand. A single-user
+deploy survives that fine; gateway mode and anything shared should add KV:
 
 ```bash
 npx wrangler kv namespace create MODEL_CACHE
@@ -192,7 +230,7 @@ npx wrangler kv namespace create MODEL_CACHE
 
 ```bash
 export WORKER=https://chatplayground-relay.<acct>.workers.dev
-export KEY=user_YOUR_CLERK_ID
+export KEY=eyJYOUR.SESSION.JWT
 
 # List models
 curl -s $WORKER/v1/models -H "Authorization: Bearer $KEY" | jq
@@ -217,7 +255,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="https://chatplayground-relay.<acct>.workers.dev/v1",
-    api_key="user_YOUR_CLERK_ID",
+    api_key="eyJYOUR.SESSION.JWT",
 )
 
 # Text
@@ -255,7 +293,7 @@ print(resp.choices[0].message.content)
 Add a custom OpenAI-compatible provider:
 
 - **API host / base URL**: `https://chatplayground-relay.<acct>.workers.dev/v1`
-- **API key**: your `user_xxxxxxxx` Clerk ID
+- **API key**: your Clerk session JWT (or the gateway key)
 - **Model**: any id from `GET /v1/models`
 
 ### Continuing a chatplayground-side conversation
@@ -282,7 +320,7 @@ caller (OpenAI SDK)
   │  Authorization: Bearer user_xxxxx
   ▼
 Cloudflare Worker (Hono)
-  ├── middleware/auth          → extract Clerk user_id from Bearer / X-Clerk-User-Id
+  ├── middleware/auth          → Bearer session JWT (or gateway key → mint one)
   ├── middleware/error-handler → wrap thrown errors in OpenAI envelope
   ├── routes/chat              → translate body, fetch upstream, stream back
   ├── routes/models            → live discovery + 3-layer cache
@@ -291,7 +329,7 @@ Cloudflare Worker (Hono)
                 │  POST app.chatplayground.ai/api/chat/{azure|perplexity|lmsys}
                 │       (endpoint chosen per model botId)
                 │  Content-Type: text/plain;charset=UTF-8
-                │  X-Clerk-User-Id: <forwarded>
+                │  Authorization: Bearer <session jwt>
                 ▼
        chatplayground upstream
                 │  text/plain stream + trailing "CHAT_ID:<cuid>" sentinel
@@ -305,6 +343,7 @@ Cloudflare Worker (Hono)
 
 1. **In-isolate memory cache** (5 min TTL) — hits if isolate is warm
 2. **KV cache** (1 h TTL) — hits across isolates if `MODEL_CACHE` binding is configured
+   (the same namespace also holds the rotated Clerk cookie under `clerk:client_cookie`)
 3. **Live discovery** — `GET app.chatplayground.ai/api/models` (public JSON,
    no auth), validate each entry (`{botId, modelName, provider, group,
    endpoint, active, premiumOnly}`), keep `group:"chat"`. The `active` flag is
@@ -317,7 +356,7 @@ that lives upstream, so it rots unnoticed and only gets used on the day
 discovery is already broken — and serving it turned "discovery is down" into a
 404 `model_not_found`, which tells callers a model doesn't exist when it does.
 
-`/api/models` is fetched **without** the Clerk id: it is a public catalogue and
+`/api/models` is fetched **without** credentials: it is a public catalogue and
 returns the same bytes with or without one. Upstream ships the raw flags and
 lets its own frontend filter, so there is no per-account entitlement to query —
 which is why `PREMIUM_MODELS` is something you set rather than something the
@@ -339,7 +378,7 @@ src/
 │   ├── models.ts             ModelEntry shape (no hardcoded list)
 │   └── timeouts.ts           CHAT / UPLOAD / DISCOVERY fetch timeouts
 ├── middleware/
-│   ├── auth.ts               Bearer / X-Clerk-User-Id → ctx.clerkUserId
+│   ├── auth.ts               Bearer JWT / gateway key → ctx.sessionToken
 │   └── error-handler.ts      → OpenAI error envelope
 ├── routes/
 │   ├── chat.ts               POST /v1/chat/completions
@@ -353,6 +392,7 @@ src/
     ├── errors.ts             OpenAIHTTPError class + factory helpers
     ├── model-id.ts           findModel(input, registry)
     ├── model-discovery.ts    /api/models fetch + validate + cache layers
+    ├── clerk-token.ts        gateway mode: __client cookie → 60s session JWT
     ├── upstream-request.ts   OpenAI → chatplayground body translator
     └── upstream-stream.ts    CHAT_ID sentinel strip + OpenAI SSE wrap
 ```
@@ -419,7 +459,7 @@ Optional KV bindings:
    endpoint accepts any caller (no auth), and our Bearer regex is a speed
    bump, not a gate. If you deploy publicly and care about your worker's
    request quota, add a size cap or remove the route.
-8. **Keep your Clerk user ID private.** It grants access to your
+8. **Keep your session token and `__client` cookie private.** They grant access to your
    chatplayground account quota; treat it like an API key.
 
 ## License

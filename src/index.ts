@@ -16,12 +16,7 @@ app.use(
   cors({
     origin: "*",
     allowMethods: ["GET", "POST", "OPTIONS"],
-    allowHeaders: [
-      "Content-Type",
-      "Authorization",
-      "X-Clerk-User-Id",
-      "OpenAI-Beta",
-    ],
+    allowHeaders: ["Content-Type", "Authorization", "OpenAI-Beta"],
   }),
 );
 
@@ -34,7 +29,7 @@ app.get("/", (c) =>
   }),
 );
 
-// All /v1/* requires a valid Clerk user_id as Bearer or X-Clerk-User-Id.
+// All /v1/* requires a Clerk session JWT as Bearer (or the gateway API key).
 app.use("/v1/*", auth);
 app.route("/", models);
 app.route("/", chat);
