@@ -28,4 +28,14 @@ describe("upstreamError", () => {
     expect(upstreamError(403, "x").code).toBe("upstream_403");
     expect(upstreamError(503, "x").code).toBe("upstream_503");
   });
+
+  // Callers reach here when upstream answered 2xx with nothing usable (a 204,
+  // a 200 with no body). `upstream_204` would read to a client like it worked.
+  it("reports a non-error upstream status as a 502, not as itself", () => {
+    for (const s of [200, 204, 302]) {
+      expect(upstreamError(s, "x").status).toBe(502);
+      expect(upstreamError(s, "x").code).toBe("upstream_502");
+      expect(upstreamError(s, "x").type).toBe("upstream_error");
+    }
+  });
 });
