@@ -131,6 +131,11 @@ function isApiModel(v: unknown): v is ApiModel {
   );
 }
 
+/** Test seam — the memory cache is per-isolate and otherwise invisible. */
+export function resetModelCache(): void {
+  memCache = null;
+}
+
 // Which models `/v1/models` advertises: everything the feed does not mark
 // `premiumOnly`, which is the set a paid account was measured to be able to
 // call.

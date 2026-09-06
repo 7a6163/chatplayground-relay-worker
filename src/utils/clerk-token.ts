@@ -123,11 +123,9 @@ async function mint(
   const body = res.ok
     ? ((await res.json().catch(() => null)) as { jwt?: string } | null)
     : null;
-  // A 2xx with no usable jwt is a broken gateway, not a success: reporting
-  // res.status would surface the nonsensical `upstream_200` error code.
-  if (!body?.jwt) {
-    return { ok: false, status: res.ok ? 502 : res.status, rotated };
-  }
+  // A 2xx with no usable jwt still fails; upstreamError() is what turns that
+  // non-error status into a 502 rather than an `upstream_200`.
+  if (!body?.jwt) return { ok: false, status: res.status, rotated };
 
   return { ok: true, jwt: body.jwt, rotated };
 }

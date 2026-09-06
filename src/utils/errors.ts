@@ -60,6 +60,12 @@ export function upstreamError(
   upstreamStatus: number,
   message: string,
 ): OpenAIHTTPError {
+  // A status below 400 reaching here means upstream answered "fine" with
+  // something unusable — a 204, or a 200 whose body is missing or unparseable.
+  // That is a gateway failure, and reporting it verbatim would hand the caller
+  // `upstream_200`: a code that reads like the call worked.
+  const status = upstreamStatus >= 400 ? upstreamStatus : 502;
+
   // These mean "this request was rejected", not "the gateway broke", so they
   // keep their own status. Folding them into 502 makes OpenAI-compatible
   // clients mishandle both: a permission failure gets retried forever, and a
@@ -70,11 +76,11 @@ export function upstreamError(
     403: "permission_denied",
     429: "rate_limit_error",
   };
-  const type = passthrough[upstreamStatus];
+  const type = passthrough[status];
   return new OpenAIHTTPError(
-    type ? upstreamStatus : 502,
+    type ? status : 502,
     message,
     type ?? "upstream_error",
-    `upstream_${upstreamStatus}`,
+    `upstream_${status}`,
   );
 }
