@@ -257,7 +257,7 @@ describe("auth — gateway mode cookie rotation", () => {
     expect(cookieOf(3)).toBe("__client=secret-cookie");
   });
 
-  it("401s when both the KV copy and the secret are dead", async () => {
+  it("keeps the KV copy when the secret is dead too — deleting gains nothing", async () => {
     const MODEL_CACHE = kv("dead-value");
     mintOnly(() => new Response("", { status: 401 }));
 
@@ -268,7 +268,7 @@ describe("auth — gateway mode cookie rotation", () => {
       },
     );
     expect(res.status).toBe(401);
-    expect(MODEL_CACHE.delete).toHaveBeenCalledWith("clerk:client_cookie");
+    expect(MODEL_CACHE.delete).not.toHaveBeenCalled();
   });
 
   it("works without a KV binding (rotation just isn't persisted)", async () => {
@@ -368,6 +368,73 @@ describe("auth — gateway mode failure handling", () => {
     expect(MODEL_CACHE.put).toHaveBeenCalledWith(
       "clerk:client_cookie",
       "rotated-on-lookup",
+    );
+  });
+
+  it("persists a lookup rotation even when the mint then fails", async () => {
+    const MODEL_CACHE = kv();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      String(input).endsWith("/v1/client")
+        ? Response.json(
+            { response: { last_active_session_id: "sess_x" } },
+            { headers: { "set-cookie": "__client=rotated-on-lookup; Path=/" } },
+          )
+        : new Response("", { status: 500 }),
+    );
+
+    const res = await call(
+      { ...base, MODEL_CACHE },
+      { authorization: "Bearer sk-relay-xyz" },
+    );
+    expect(res.status).toBe(502);
+    // Clerk already killed the old cookie when it issued this one; dropping it
+    // on the failure path would leave gateway mode with no live credential.
+    expect(MODEL_CACHE.put).toHaveBeenCalledWith(
+      "clerk:client_cookie",
+      "rotated-on-lookup",
+    );
+  });
+
+  it("re-resolves a session id Clerk 404s on, not just one it 401s on", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      String(input).endsWith("/v1/client")
+        ? Response.json({ response: { last_active_session_id: "sess_first" } })
+        : Response.json({ jwt: "minted.jwt.sig" }),
+    );
+    await call(base, { authorization: "Bearer sk-relay-xyz" }); // caches sess_first
+    vi.setSystemTime(Date.now() + 46_000);
+
+    // Clerk answers 404 for a session id it no longer knows — not an auth
+    // failure, so treating only 401/403 as re-resolvable stranded the isolate.
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/v1/client")) {
+        return Response.json({
+          response: { last_active_session_id: "sess_second" },
+        });
+      }
+      return url.includes("sess_first")
+        ? new Response("", { status: 404 })
+        : Response.json({ jwt: "second.jwt.sig" });
+    });
+
+    const res = await call(base, { authorization: "Bearer sk-relay-xyz" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ sessionToken: "second.jwt.sig" });
+  });
+
+  it("treats a 2xx mint with no jwt as a gateway failure", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      String(input).endsWith("/v1/client")
+        ? Response.json({ response: { last_active_session_id: "sess_x" } })
+        : Response.json({ object: "token" }),
+    );
+
+    const res = await call(base, { authorization: "Bearer sk-relay-xyz" });
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe(
+      "upstream_502",
     );
   });
 

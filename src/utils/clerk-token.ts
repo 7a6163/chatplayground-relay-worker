@@ -6,8 +6,10 @@ import { unauthorized, upstreamError } from "./errors";
 // secret. It stores the long-lived `__client` cookie instead and mints a fresh
 // session token from Clerk's frontend API, exactly as the web app does.
 //
-// ponytail: per-isolate value cache, no promise dedupe — concurrent cold
-// requests may mint twice (Clerk allows it). Add dedupe only if it shows up.
+// ponytail: per-isolate value cache, no promise dedupe and no compare-and-set
+// on the KV cookie — concurrent cold requests may mint twice (Clerk allows it)
+// and can race each other's rotation, last write winning. Add dedupe/CAS only
+// if it shows up.
 let cached: { jwt: string; until: number } | null = null;
 
 // Resolved once per isolate and kept until an attempt fails, so the session
@@ -32,13 +34,26 @@ export async function mintSessionToken(env: Env): Promise<string> {
 
   // A rotated cookie in KV supersedes the secret: after a rotation it is the
   // only live credential, the secret being dead by definition. So drop it only
-  // when Clerk actually rejects it — a 5xx or 429 must leave it alone.
+  // once the secret has proved it still authenticates — on a 5xx, a 429, or a
+  // secret that is itself dead, deleting would destroy the live credential and
+  // leave nothing behind. Re-running `wrangler secret put` still wins: the
+  // fresh secret succeeds, and the stale KV copy goes with it.
   const stored = await env.MODEL_CACHE?.get(COOKIE_KEY);
   let result = await attempt(env, stored ?? secretCookie);
   if (!result.ok && stored && isAuthFailure(result.status)) {
-    await env.MODEL_CACHE?.delete(COOKIE_KEY);
-    result = await attempt(env, secretCookie);
+    const retry = await attempt(env, secretCookie);
+    if (retry.ok) {
+      await env.MODEL_CACHE?.delete(COOKIE_KEY);
+      result = retry;
+    }
   }
+
+  // Persist a rotation even when the attempt ultimately failed. Clerk kills the
+  // old value the moment it issues a replacement, so a rotation we saw but
+  // never stored leaves gateway mode with no live cookie at all — unrecoverable
+  // without re-capturing by hand. Without a KV binding that is the cost of any
+  // rotation.
+  if (result.rotated) await env.MODEL_CACHE?.put(COOKIE_KEY, result.rotated);
 
   if (!result.ok) {
     throw upstreamError(
@@ -46,11 +61,6 @@ export async function mintSessionToken(env: Env): Promise<string> {
       `Clerk token refresh failed (${result.status}). The __client cookie has likely been rotated or revoked — re-capture it and re-run \`wrangler secret put CLERK_CLIENT_COOKIE\`.`,
     );
   }
-
-  // Persist a rotated cookie so the next isolate authenticates with the live
-  // value, not the dead secret. Without a KV binding rotation simply breaks
-  // gateway mode until you re-capture the cookie by hand.
-  if (result.rotated) await env.MODEL_CACHE?.put(COOKIE_KEY, result.rotated);
 
   // Refresh 15s before the 60s expiry so an in-flight request never carries a
   // token that dies mid-hop.
@@ -60,29 +70,34 @@ export async function mintSessionToken(env: Env): Promise<string> {
 
 type Attempt =
   | { ok: true; jwt: string; rotated: string | null }
-  | { ok: false; status: number };
+  | { ok: false; status: number; rotated: string | null };
 
 const isAuthFailure = (status: number) => status === 401 || status === 403;
 
 async function attempt(env: Env, cookie: string): Promise<Attempt> {
+  // Clerk can rotate `__client` on any of these calls; once it does, the
+  // replacement is the only value the rest of this attempt — and KV — may use.
+  let rotated: string | null = null;
+
   if (cachedSessionId) {
-    const result = await mint(env, cachedSessionId, cookie, null);
+    const first = await mint(env, cachedSessionId, cookie, null);
+    if (first.ok) return first;
     // A cached session id outlives the session it names — the account can sign
-    // out and back in between requests. Re-resolve before blaming the cookie.
-    if (result.ok || !isAuthFailure(result.status)) return result;
+    // out and back in between requests, and Clerk answers 404 for a session id
+    // it no longer knows. Any failure earns one re-resolve before we blame the
+    // cookie; returning early here pinned a dead id for the isolate's life.
+    rotated = first.rotated;
     cachedSessionId = null;
   }
 
-  const client = await clerk(env, "/v1/client", cookie, "GET");
-  if (!client.ok) return { ok: false, status: client.status };
+  const client = await clerk(env, "/v1/client", rotated ?? cookie, "GET");
+  if (!client.ok) return { ok: false, status: client.status, rotated };
 
-  // Clerk can rotate `__client` on this handshake-shaped call too; if it does,
-  // the replacement is what the mint — and KV — have to carry from here on.
-  const rotated = rotatedCookie(client.headers);
+  rotated = rotatedCookie(client.headers) ?? rotated;
   const sessionId = await sessionIdOf(client);
   // A cookie Clerk no longer honours yields an empty client, not an error, so
   // "no session" is this call's version of a 401.
-  if (!sessionId) return { ok: false, status: 401 };
+  if (!sessionId) return { ok: false, status: 401, rotated };
 
   const result = await mint(env, sessionId, rotated ?? cookie, rotated);
   if (result.ok) cachedSessionId = sessionId;
@@ -104,16 +119,17 @@ async function mint(
     cookie,
     "POST",
   );
+  const rotated = rotatedCookie(res.headers) ?? rotatedSoFar;
   const body = res.ok
     ? ((await res.json().catch(() => null)) as { jwt?: string } | null)
     : null;
-  if (!body?.jwt) return { ok: false, status: res.status };
+  // A 2xx with no usable jwt is a broken gateway, not a success: reporting
+  // res.status would surface the nonsensical `upstream_200` error code.
+  if (!body?.jwt) {
+    return { ok: false, status: res.ok ? 502 : res.status, rotated };
+  }
 
-  return {
-    ok: true,
-    jwt: body.jwt,
-    rotated: rotatedCookie(res.headers) ?? rotatedSoFar,
-  };
+  return { ok: true, jwt: body.jwt, rotated };
 }
 
 interface ClerkClient {
