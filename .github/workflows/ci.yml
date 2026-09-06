@@ -14,8 +14,8 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: lts/*
           cache: npm
@@ -24,11 +24,19 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
+      - run: npm run test:coverage
 
-      # Only production deps can actually be exploited: the Worker bundle is
-      # hono plus this repo's own code. wrangler and vitest drag in a standing
-      # pile of advisories that would keep this permanently red while changing
-      # nothing about what ships. The prod tree is one package, so this fails
-      # on any severity rather than picking a threshold.
+      # Public repo: without CODECOV_TOKEN set this falls back to tokenless
+      # upload, and fork PRs use that path regardless. Left non-fatal on
+      # purpose — a flaky upload should not block a merge.
+      - uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/lcov.info
+
+      # Scoped to production deps because only those reach the Worker bundle,
+      # which is hono plus this repo's own code. The whole tree happens to be
+      # clean right now, but a future advisory in wrangler or vitest would say
+      # nothing about what ships, and blocking merges on it buys nothing. One
+      # package in the prod tree, so no --audit-level threshold: anything fails.
       - run: npm audit --omit=dev

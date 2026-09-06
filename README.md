@@ -1,5 +1,9 @@
 # chatplayground-relay-worker
 
+[![version](https://img.shields.io/github/package-json/v/7a6163/chatplayground-relay-worker)](https://github.com/7a6163/chatplayground-relay-worker/blob/main/package.json)
+[![CI](https://github.com/7a6163/chatplayground-relay-worker/actions/workflows/ci.yml/badge.svg)](https://github.com/7a6163/chatplayground-relay-worker/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/7a6163/chatplayground-relay-worker/graph/badge.svg)](https://codecov.io/gh/7a6163/chatplayground-relay-worker)
+
 > OpenAI-compatible Cloudflare Worker that relays to [chatplayground.ai](https://web.chatplayground.ai/).
 > BYOK, stateless, multi-model. Drop-in `base_url` for OpenAI SDKs, Chatbox, LangChain, etc.
 
