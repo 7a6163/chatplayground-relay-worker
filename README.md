@@ -317,7 +317,7 @@ Standard OpenAI SDKs don't surface these but you can hand-craft the request.
 ```
 caller (OpenAI SDK)
   │  POST /v1/chat/completions
-  │  Authorization: Bearer user_xxxxx
+  │  Authorization: Bearer <session jwt | relay key>
   ▼
 Cloudflare Worker (Hono)
   ├── middleware/auth          → Bearer session JWT (or gateway key → mint one)
