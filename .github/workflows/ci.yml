@@ -14,8 +14,8 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: lts/*
           cache: npm
@@ -29,7 +29,7 @@ jobs:
       # Public repo: without CODECOV_TOKEN set this falls back to tokenless
       # upload, and fork PRs use that path regardless. Left non-fatal on
       # purpose — a flaky upload should not block a merge.
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/lcov.info
