@@ -55,9 +55,9 @@ function upstream(reply: (url: string) => Response) {
 }
 
 /** The chat route as index.ts mounts it: error envelope + auth in front. */
-// biome-ignore lint/suspicious/noExplicitAny: minimal test env stub
+// oxlint-disable-next-line typescript/no-explicit-any -- minimal test env stub
 function post(body: unknown, testEnv: any = env) {
-  // biome-ignore lint/suspicious/noExplicitAny: minimal test env stub
+  // oxlint-disable-next-line typescript/no-explicit-any -- minimal test env stub
   const app = new Hono<any>();
   app.onError(errorHandler);
   app.use("/v1/*", auth);
@@ -76,7 +76,10 @@ function post(body: unknown, testEnv: any = env) {
   );
 }
 
-const hello = { model: "gpt-5.6-luna", messages: [{ role: "user", content: "Hello" }] };
+const hello = {
+  model: "gpt-5.6-luna",
+  messages: [{ role: "user", content: "Hello" }],
+};
 
 async function envelope(res: Response) {
   const body = (await res.json()) as {
@@ -233,7 +236,10 @@ describe("POST /v1/chat/completions — non-streaming", () => {
           role: "user",
           content: [
             { type: "text", text: "abcd" },
-            { type: "image_url", image_url: { url: `data:${"x".repeat(500)}` } },
+            {
+              type: "image_url",
+              image_url: { url: `data:${"x".repeat(500)}` },
+            },
           ],
         },
       ],
@@ -296,9 +302,7 @@ describe("POST /v1/chat/completions — streaming", () => {
     expect(chunks[0].model).toBe("gpt-5.6-luna");
     expect(chunks[0].choices[0].delta).toEqual({ role: "assistant" });
 
-    const text = chunks
-      .map((c) => c.choices[0].delta.content ?? "")
-      .join("");
+    const text = chunks.map((c) => c.choices[0].delta.content ?? "").join("");
     expect(text).toBe("Hi there!");
     expect(chunks.at(-1).choices[0].finish_reason).toBe("stop");
   });

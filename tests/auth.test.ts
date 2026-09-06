@@ -38,7 +38,7 @@ function clerkStub(url: string): Response {
     : Response.json({ object: "token", jwt: "minted.jwt.sig" });
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: minimal test env stub
+// oxlint-disable-next-line typescript/no-explicit-any -- minimal test env stub
 function call(env: any, headers: Record<string, string>) {
   const app = new Hono<any>();
   app.onError(errorHandler);
@@ -441,7 +441,7 @@ describe("auth — gateway mode failure handling", () => {
   it("never touches Clerk for a route that doesn't need upstream auth", async () => {
     vi.spyOn(globalThis, "fetch");
     // /v1/models and /v1/files never call the thunk.
-    // biome-ignore lint/suspicious/noExplicitAny: minimal test env stub
+    // oxlint-disable-next-line typescript/no-explicit-any -- minimal test env stub
     const app = new Hono<any>();
     app.onError(errorHandler);
     app.use("*", auth);

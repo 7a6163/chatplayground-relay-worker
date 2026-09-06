@@ -18,7 +18,7 @@ describe("isVisible", () => {
     expect(isVisible(entry(false), {})).toBe(true);
   });
 
-  it("shows everything when PREMIUM_MODELS is exactly \"true\"", () => {
+  it('shows everything when PREMIUM_MODELS is exactly "true"', () => {
     expect(isVisible(entry(true), { PREMIUM_MODELS: "true" })).toBe(true);
   });
 
