@@ -17,6 +17,12 @@ export interface Env {
   // their own JWT). Secrets, NOT wrangler.jsonc vars (those are plaintext).
   RELAY_API_KEY?: string;
   CLERK_CLIENT_COOKIE?: string;
+  // Set both and the worker signs in for itself when the cookie above is dead
+  // or absent, which is the only way to survive a rotation Clerk handed to a
+  // browser instead of to us. The password is a far larger credential than the
+  // cookie — use an account dedicated to this relay.
+  CLERK_EMAIL?: string;
+  CLERK_PASSWORD?: string;
 
   // KV binding (optional — without it every cold isolate refetches the model
   // feed, and a discovery failure surfaces as a 503)

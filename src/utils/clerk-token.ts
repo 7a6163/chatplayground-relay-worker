@@ -25,10 +25,13 @@ export async function mintSessionToken(env: Env): Promise<string> {
   if (cached && cached.until > Date.now()) return cached.jwt;
 
   const secretCookie = env.CLERK_CLIENT_COOKIE;
-  if (!secretCookie) {
+  // With credentials the worker can mint its own cookie, so the captured one
+  // becomes optional — it just saves a sign-in on the very first request.
+  const canSignIn = Boolean(env.CLERK_EMAIL && env.CLERK_PASSWORD);
+  if (!secretCookie && !canSignIn) {
     // Only reachable by an authorized caller — safe to surface as config error.
     throw unauthorized(
-      "Relay misconfigured: CLERK_CLIENT_COOKIE secret is missing.",
+      "Relay misconfigured: set CLERK_CLIENT_COOKIE, or CLERK_EMAIL + CLERK_PASSWORD to let the worker sign in for itself.",
     );
   }
 
@@ -39,12 +42,36 @@ export async function mintSessionToken(env: Env): Promise<string> {
   // leave nothing behind. Re-running `wrangler secret put` still wins: the
   // fresh secret succeeds, and the stale KV copy goes with it.
   const stored = await env.MODEL_CACHE?.get(COOKIE_KEY);
-  let result = await attempt(env, stored ?? secretCookie);
-  if (!result.ok && stored && isAuthFailure(result.status)) {
+  const known = stored ?? secretCookie;
+  let result: Attempt = known
+    ? await attempt(env, known)
+    : { ok: false, status: 401, rotated: null };
+  if (!result.ok && stored && secretCookie && isAuthFailure(result.status)) {
     const retry = await attempt(env, secretCookie);
     if (retry.ok) {
       await env.MODEL_CACHE?.delete(COOKIE_KEY);
       result = retry;
+    }
+  }
+
+  // Last resort: sign in and get a cookie of our own. The rotations that
+  // actually kill gateway mode happen in a browser — sign-out, re-sign-in,
+  // handshakes — and Clerk hands the replacement to that browser, never to us,
+  // so watching Set-Cookie on our own two calls cannot keep us in sync. Signing
+  // in does, and it also ends the shared-credential problem: the session lands
+  // on a client of our own, leaving every other client's session untouched
+  // (verified — single_session_mode is per client, not per user).
+  //
+  // Only on an auth failure, never on a 5xx: Clerk being down is not a reason
+  // to burn a login. And a wrong password fails without creating anything,
+  // while a right one ends the failure that triggered it, so this cannot loop.
+  if (!result.ok && canSignIn && isAuthFailure(result.status)) {
+    const fresh = await signIn(env);
+    if (fresh) {
+      const retry = await attempt(env, fresh);
+      // The fresh cookie is itself the thing worth keeping, whether or not
+      // Clerk rotated again on top of it.
+      if (retry.ok) result = { ...retry, rotated: retry.rotated ?? fresh };
     }
   }
 
@@ -150,21 +177,74 @@ async function sessionIdOf(res: Response): Promise<string | null> {
   return active?.id ?? client?.last_active_session_id ?? null;
 }
 
+/**
+ * Email + password sign-in, the same two-step flow the web client performs.
+ * Returns the `__client` cookie the completed sign-in issues, or null.
+ *
+ * No captcha token: this instance enables Turnstile on sign-up only, and the
+ * live sign-in body carries none.
+ */
+async function signIn(env: Env): Promise<string | null> {
+  const email = env.CLERK_EMAIL;
+  const password = env.CLERK_PASSWORD;
+  if (!email || !password) return null;
+
+  // A sign-in attaches a session to a client, so there has to be one first.
+  // Clerk issues a fresh anonymous client to a credential-less GET.
+  const boot = await clerk(env, "/v1/client", null, "GET");
+  let cookie = rotatedCookie(boot.headers);
+  if (!cookie) return null;
+
+  const started = await clerk(
+    env,
+    "/v1/client/sign_ins",
+    cookie,
+    "POST",
+    `locale=en-US&identifier=${encodeURIComponent(email)}`,
+  );
+  cookie = rotatedCookie(started.headers) ?? cookie;
+  const sia = await signInId(started);
+  if (!started.ok || !sia) return null;
+
+  const done = await clerk(
+    env,
+    `/v1/client/sign_ins/${sia}/attempt_first_factor`,
+    cookie,
+    "POST",
+    `strategy=password&password=${encodeURIComponent(password)}`,
+  );
+  if (!done.ok) return null;
+  return rotatedCookie(done.headers) ?? cookie;
+}
+
+async function signInId(res: Response): Promise<string | null> {
+  const body = (await res.json().catch(() => null)) as {
+    response?: { id?: string };
+  } | null;
+  return body?.response?.id ?? null;
+}
+
 function clerk(
   env: Env,
   path: string,
-  cookie: string,
+  cookie: string | null,
   method: "GET" | "POST",
+  body?: string,
 ): Promise<Response> {
   // ponytail: a network-level failure (timeout, DNS) throws out of here and
   // surfaces as 500, matching how routes/chat.ts treats its own upstream fetch.
   return fetch(`${env.CLERK_FAPI_URL}${path}`, {
     method,
     headers: {
-      cookie: `__client=${cookie}`,
+      // Omitted entirely when bootstrapping — `__client=` empty reads as a
+      // cleared cookie, where no header at all gets a fresh client.
+      ...(cookie ? { cookie: `__client=${cookie}` } : {}),
+      ...(body ? { "content-type": "application/x-www-form-urlencoded" } : {}),
       origin: env.UPSTREAM_ORIGIN,
       referer: env.UPSTREAM_REFERER,
     },
+    // Spread, not `body`: a GET must not carry the key at all, even undefined.
+    ...(body ? { body } : {}),
     signal: AbortSignal.timeout(CLERK_TOKEN_TIMEOUT),
   });
 }
