@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The tag is derived from package.json rather than typed, so it can never
+      # disagree with the version the README badge reads — and a release is
+      # exactly what a version bump landing on main means, with nothing to
+      # remember. Every other push is a no-op because the tag already exists.
+      #
+      # No gate on CI here: main is reached through pull requests, where ci.yml
+      # has already run. A direct push to main would skip that.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$(node -p "require('./package.json').version")"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag is already released — nothing to do."
+            exit 0
+          fi
+          gh release create "$tag" --title "$tag" --generate-notes
