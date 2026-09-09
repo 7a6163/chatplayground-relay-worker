@@ -603,6 +603,52 @@ describe("auth — gateway mode self-heals by signing in", () => {
     expect(urls.some((u) => u.includes("sign_ins"))).toBe(false);
   });
 
+  it("surfaces the original auth failure when the password is wrong", async () => {
+    const MODEL_CACHE = kv();
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/v1/client")) {
+          return json({ response: { sessions: [] } }, "__client=boot; Path=/");
+        }
+        if (url.endsWith("/sign_ins"))
+          return json({ response: { id: "sia_1" } });
+        // Clerk rejects the password.
+        return new Response("", { status: 422 });
+      },
+    );
+
+    const res = await call(
+      { ...base, MODEL_CACHE },
+      { authorization: "Bearer sk-relay-xyz" },
+    );
+    expect(res.status).toBe(401);
+    // Nothing usable was obtained, so nothing may be written over the store.
+    expect(MODEL_CACHE.put).not.toHaveBeenCalled();
+  });
+
+  it("gives up quietly when the sign-in start is rejected", async () => {
+    const MODEL_CACHE = kv();
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/v1/client")) {
+          return json({ response: { sessions: [] } }, "__client=boot; Path=/");
+        }
+        return new Response("", { status: 400 });
+      },
+    );
+
+    const res = await call(
+      { ...base, MODEL_CACHE },
+      { authorization: "Bearer sk-relay-xyz" },
+    );
+    expect(res.status).toBe(401);
+    const urls = vi.mocked(fetch).mock.calls.map(([u]) => String(u));
+    // No point attempting the password once the flow has no sign-in to attach to.
+    expect(urls.some((u) => u.includes("attempt_first"))).toBe(false);
+  });
+
   it("401s with a config error when neither a cookie nor credentials exist", async () => {
     vi.spyOn(globalThis, "fetch");
     const res = await call(
