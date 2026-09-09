@@ -22,13 +22,14 @@
     // Uncomment once the account has premium access — exposes the 12
     // premiumOnly models in /v1/models. Without it they 403 upstream.
     // ,"PREMIUM_MODELS": "true"
-  }
+  },
 
-  // Model registry cache — uncomment + fill the id after running
-  // `wrangler kv namespace create MODEL_CACHE`. Without it only the 5-minute
-  // per-isolate memory cache applies, so every cold isolate refetches the feed.
-  //
-  // "kv_namespaces": [
-  //   { "binding": "MODEL_CACHE", "id": "" }
-  // ]
+  // Two things live here. The model registry, so a cold isolate doesn't refetch
+  // the feed. And — the reason this binding is not optional in practice — the
+  // rotated Clerk `__client` cookie: a rotation has nowhere else to persist, so
+  // without KV gateway mode dies the moment Clerk issues a replacement and the
+  // cookie has to be re-captured by hand (see utils/clerk-token.ts).
+  "kv_namespaces": [
+    { "binding": "MODEL_CACHE", "id": "a0075251c12d4ae89ff4a73dbc571827" }
+  ]
 }

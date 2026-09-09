@@ -58,15 +58,40 @@ OpenAI-style Bearer token, forwarded verbatim as `Authorization: Bearer <jwt>`.
 Because a session JWT dies in 60 seconds, it cannot be stored as a secret. What
 *can* be stored is Clerk's `__client` cookie; the worker mints a fresh session
 token from it exactly as the web app does (cached per isolate, refreshed 15s
-before expiry). Set two secrets:
+before expiry).
+
+**Recommended — let the worker sign in for itself:**
+
+```bash
+wrangler secret put RELAY_API_KEY   # a key you invent, e.g. sk-relay-xxxxx
+wrangler secret put CLERK_EMAIL
+wrangler secret put CLERK_PASSWORD
+```
+
+With these the worker obtains its own `__client` whenever the stored one is
+dead or absent, so gateway mode never needs a hand-captured cookie. The
+password is a much larger credential than a cookie — it can change the account,
+including its own password, and revoking it means changing it. **Use an account
+dedicated to this relay.** See [How the cookie stays
+alive](#how-the-cookie-stays-alive) for why this is the only thing that
+actually survives a rotation.
+
+**Or capture the cookie by hand** (no password stored, but you re-capture on
+every rotation):
 
 ```bash
 wrangler secret put CLERK_CLIENT_COOKIE  # value of the `__client` cookie
-wrangler secret put RELAY_API_KEY        # a key you invent, e.g. sk-relay-xxxxx
+wrangler secret put RELAY_API_KEY
 ```
 
 **Where the cookie comes from:** DevTools → Application → Cookies →
-`https://clerk.chatplayground.ai` → copy `__client`.
+`https://clerk.chatplayground.ai` → copy `__client`. Two traps: it is on the
+`clerk.` subdomain, not the app's, and it is *not* `__client_uat` (a public
+timestamp) nor the `Authorization: Bearer` JWT from `/api/chat/*` (that one is
+the 60-second session token). A correct value decodes to
+`{"id":"client_...","rotating_token":"..."}` and carries no `exp`.
+
+Setting both is fine: the cookie is tried first and the sign-in is the fallback.
 
 The session id is *not* configured. It cannot be decoded out of the cookie
 (which holds only `id` + `rotating_token`), so the worker asks Clerk for it —
@@ -93,14 +118,34 @@ Validity is decided server-side by Clerk's client record and that
 **rotates** it (sign-out, re-sign-in, handshake events). Minting session tokens
 does not rotate it; that was checked against the live API.
 
-When Clerk *does* rotate, it returns the replacement in `Set-Cookie`, and the
-worker writes it to KV (`clerk:client_cookie`) so the next isolate uses the live
-value instead of the dead secret. **That survival depends on the `MODEL_CACHE`
-KV binding being enabled** — see [KV-backed model cache](#kv-backed-model-cache).
-Without it, a rotation means gateway mode 401s until you re-capture the cookie
-by hand. A stale KV copy is self-healing: it's dropped and the secret retried
-once, so re-running `wrangler secret put CLERK_CLIENT_COOKIE` always takes
-effect.
+#### How the cookie stays alive
+
+When Clerk rotates on one of the worker's own two calls, it returns the
+replacement in `Set-Cookie` and the worker writes it to KV
+(`clerk:client_cookie`), so the next isolate uses the live value. That needs
+the `MODEL_CACHE` binding — see [KV-backed model
+cache](#kv-backed-model-cache).
+
+**On its own that is not enough, and it is worth being clear why.** Minting
+does not rotate the cookie — checked against the live API. The rotations that
+actually kill gateway mode happen in a *browser*: sign-out, re-sign-in,
+handshakes. Clerk hands the replacement to that browser, never to the worker,
+which simply starts failing. Worse, a hand-captured cookie makes the worker and
+the browser share one client record and one `rotating_token`, so whichever
+rotates last invalidates the other.
+
+`CLERK_EMAIL` + `CLERK_PASSWORD` are what close both gaps. On a 401/403 the
+worker signs in — the same two-step flow the web client uses — and keeps the
+`__client` that sign-in issues. The session lands on a client of the worker's
+own, so it stops competing with any browser (verified: `single_session_mode` is
+per client, not per user). Sign-in runs only on an auth failure, never on a
+5xx, and cannot loop: a wrong password creates nothing, a right one removes the
+condition that triggered it.
+
+A stale KV copy is self-healing either way: it is retried against the secret
+once and dropped only if the secret works, so re-running `wrangler secret put
+CLERK_CLIENT_COOKIE` always takes effect while a Clerk outage never costs the
+live cookie.
 
 ## Features
 
@@ -220,8 +265,9 @@ callers get a stable key and the credential refreshes itself.
 The `MODEL_CACHE` namespace does double duty: the model registry, and the
 rotated `__client` cookie in gateway mode. There is no hardcoded fallback list,
 so without KV a discovery failure is a 503, every cold isolate refetches the
-feed, and a Clerk cookie rotation has to be repaired by hand. A single-user
-deploy survives that fine; gateway mode and anything shared should add KV:
+feed, and a cookie the worker obtains (by rotation or by signing in) is thrown
+away at the end of the isolate. A single-user deploy survives that fine;
+gateway mode and anything shared should add KV:
 
 ```bash
 npx wrangler kv namespace create MODEL_CACHE
