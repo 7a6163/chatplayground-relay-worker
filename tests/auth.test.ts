@@ -278,6 +278,85 @@ describe("auth — gateway mode cookie rotation", () => {
   });
 });
 
+// workerd's Headers exposes getAll("set-cookie") and no getSetCookie; undici
+// (what these tests run on) is the other way round. So the accessor that
+// actually ships is never reached by a real Response here — these stub the
+// shape to cover the feature detection rather than workerd itself.
+describe("auth — cookie rotation under a workerd-shaped Headers", () => {
+  const base = {
+    RELAY_API_KEY: "sk-relay-xyz",
+    CLERK_CLIENT_COOKIE: "secret-cookie",
+    CLERK_FAPI_URL: "https://clerk.example.test",
+    UPSTREAM_ORIGIN: "https://web.example.test",
+    UPSTREAM_REFERER: "https://web.example.test/",
+  };
+
+  const kv = () => ({
+    get: vi.fn().mockResolvedValue(null),
+    put: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn().mockResolvedValue(undefined),
+  });
+
+  /** Response-shaped stub whose headers expose only the given accessors. */
+  function serve(headers: (setCookie: string) => Record<string, unknown>) {
+    const reply = (body: unknown, setCookie: string) =>
+      ({
+        ok: true,
+        status: 200,
+        headers: headers(setCookie),
+        json: async () => body,
+      }) as unknown as Response;
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: RequestInfo | URL) =>
+        String(input).endsWith("/v1/client")
+          ? reply(
+              { response: { last_active_session_id: "sess_x" } },
+              "__client=rotated-value; Path=/; HttpOnly",
+            )
+          : reply({ jwt: "minted.jwt.sig" }, ""),
+    );
+  }
+
+  beforeEach(() => resetSessionTokenCache());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("reads the rotation from getAll when getSetCookie is absent", async () => {
+    const MODEL_CACHE = kv();
+    serve((sc) => ({
+      getAll: (name: string) => (name === "set-cookie" && sc ? [sc] : []),
+      get: () => null,
+    }));
+
+    const res = await call(
+      { ...base, MODEL_CACHE },
+      { authorization: "Bearer sk-relay-xyz" },
+    );
+    expect(res.status).toBe(200);
+    expect(MODEL_CACHE.put).toHaveBeenCalledWith(
+      "clerk:client_cookie",
+      "rotated-value",
+    );
+  });
+
+  it("falls back to get() when neither list accessor exists", async () => {
+    const MODEL_CACHE = kv();
+    serve((sc) => ({
+      get: (name: string) => (name === "set-cookie" && sc ? sc : null),
+    }));
+
+    const res = await call(
+      { ...base, MODEL_CACHE },
+      { authorization: "Bearer sk-relay-xyz" },
+    );
+    expect(res.status).toBe(200);
+    expect(MODEL_CACHE.put).toHaveBeenCalledWith(
+      "clerk:client_cookie",
+      "rotated-value",
+    );
+  });
+});
+
 describe("auth — gateway mode failure handling", () => {
   const base = {
     RELAY_API_KEY: "sk-relay-xyz",
