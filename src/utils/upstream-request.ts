@@ -1,7 +1,12 @@
 import type { UpstreamEndpoint } from "../constants/endpoints";
 import type { ModelEntry } from "../constants/models";
-import type { ChatCompletionRequest } from "../types/openai";
-import type { UpstreamChatRequest, UpstreamMessage } from "../types/upstream";
+import type { ChatCompletionRequest, OpenAIMessage } from "../types/openai";
+import type {
+  UpstreamChatRequest,
+  UpstreamContentPart,
+  UpstreamContentPartText,
+  UpstreamMessage,
+} from "../types/upstream";
 
 export interface BuiltUpstreamRequest {
   endpoint: UpstreamEndpoint;
@@ -12,13 +17,7 @@ export function buildUpstreamRequest(
   req: ChatCompletionRequest,
   model: ModelEntry,
 ): BuiltUpstreamRequest {
-  // chatplayground accepts the same content shape as OpenAI (string or
-  // ContentPart[]), so we pass `content` through unchanged. The only
-  // role normalization: collapse "tool" → "user" (no endpoint has a tool role).
-  const messages: UpstreamMessage[] = req.messages.map((msg) => ({
-    role: msg.role === "tool" ? "user" : msg.role,
-    content: msg.content,
-  }));
+  const messages = collapseHistory(req.messages);
 
   // OpenAI `metadata.save` extension → !noSave. Default: don't pollute the
   // caller's chatplayground history with API traffic (noSave=true).
@@ -55,6 +54,53 @@ export function buildUpstreamRequest(
         body: { ...base, model: model.modelName, apiKey: null },
       };
   }
+}
+
+const ROLE_LABEL = {
+  system: "System",
+  user: "User",
+  assistant: "Assistant",
+  tool: "Tool",
+} as const;
+
+/**
+ * Upstream now 400s on more than one message ("Send only the new prompt.
+ * Conversation history is not accepted.") — the web client sends only the new
+ * turn and lets `chatId` carry history server-side. The relay is stateless, so
+ * fold the OpenAI history into one user turn as a role-labelled transcript.
+ * Content parts pass through unchanged (same shape as OpenAI), images in place.
+ */
+function collapseHistory(messages: OpenAIMessage[]): UpstreamMessage[] {
+  const [only] = messages;
+  if (messages.length === 1 && only) {
+    // No endpoint has a tool role.
+    return [
+      {
+        role: only.role === "tool" ? "user" : only.role,
+        content: only.content,
+      },
+    ];
+  }
+
+  const parts: UpstreamContentPart[] = [];
+  for (const m of messages) {
+    const label = ROLE_LABEL[m.role];
+    if (typeof m.content === "string") {
+      parts.push({ type: "text", text: `${label}: ${m.content}` });
+    } else {
+      parts.push({ type: "text", text: `${label}:` }, ...m.content);
+    }
+  }
+
+  const text = parts.every((p) => p.type === "text");
+  return [
+    {
+      role: "user",
+      content: text
+        ? parts.map((p) => (p as UpstreamContentPartText).text).join("\n\n")
+        : parts,
+    },
+  ];
 }
 
 export function endpointUrl(

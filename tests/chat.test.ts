@@ -250,6 +250,60 @@ describe("POST /v1/chat/completions — non-streaming", () => {
 });
 
 describe("POST /v1/chat/completions — upstream request", () => {
+  it("folds history into one user message, keeping images in place", async () => {
+    upstream(() => new Response(`ok${CHAT_ID}`));
+    const image = {
+      type: "image_url",
+      image_url: { url: "https://i.test/a.png" },
+    };
+
+    await post({
+      model: "gpt-5.6-luna",
+      messages: [
+        { role: "system", content: "Be brief." },
+        {
+          role: "user",
+          content: [{ type: "text", text: "What is this?" }, image],
+        },
+        { role: "assistant", content: "A cat." },
+        { role: "user", content: "Translate to Chinese" },
+      ],
+    });
+    const sent = JSON.parse(chatCall()[1].body as string);
+
+    expect(sent.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "System: Be brief." },
+          { type: "text", text: "User:" },
+          { type: "text", text: "What is this?" },
+          image,
+          { type: "text", text: "Assistant: A cat." },
+          { type: "text", text: "User: Translate to Chinese" },
+        ],
+      },
+    ]);
+  });
+
+  it("joins a text-only history into a single string", async () => {
+    upstream(() => new Response(`ok${CHAT_ID}`));
+
+    await post({
+      model: "gpt-5.6-luna",
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "hello" },
+        { role: "tool", content: "42" },
+      ],
+    });
+    const sent = JSON.parse(chatCall()[1].body as string);
+
+    expect(sent.messages).toEqual([
+      { role: "user", content: "User: hi\n\nAssistant: hello\n\nTool: 42" },
+    ]);
+  });
+
   it("routes per model and forwards the caller's session JWT", async () => {
     upstream(() => new Response(`ok${CHAT_ID}`));
 
@@ -305,6 +359,40 @@ describe("POST /v1/chat/completions — streaming", () => {
     const text = chunks.map((c) => c.choices[0].delta.content ?? "").join("");
     expect(text).toBe("Hi there!");
     expect(chunks.at(-1).choices[0].finish_reason).toBe("stop");
+  });
+
+  it("streams past a leading CHAT_ID sentinel split across chunks", async () => {
+    const enc = new TextEncoder();
+    // Longer than the 100-char holdback, so a live flush is observable.
+    const prose = "a".repeat(150);
+    const pieces = [
+      "  CHAT_",
+      CHAT_ID.slice(5, 20),
+      `${CHAT_ID.slice(20)}\n${prose}`,
+      "!",
+    ];
+    upstream(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(c) {
+              for (const p of pieces) c.enqueue(enc.encode(p));
+              c.close();
+            },
+          }),
+        ),
+    );
+
+    const chunks = (await sse(await post({ ...hello, stream: true })))
+      .filter((e) => e !== "[DONE]")
+      .map((e) => JSON.parse(e));
+    const deltas = chunks
+      .map((c) => c.choices[0].delta.content)
+      .filter((t) => t !== undefined);
+
+    expect(deltas.join("")).toBe(`${prose}!`);
+    // Prose flowed live rather than being held until the end of the stream.
+    expect(deltas.length).toBeGreaterThan(1);
   });
 
   it("appends the Sources block as a final delta", async () => {

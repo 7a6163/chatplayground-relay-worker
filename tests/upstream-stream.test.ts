@@ -29,6 +29,12 @@ describe("parseTrailers", () => {
     expect(out.citations).toEqual([]);
   });
 
+  it("strips a leading CHAT_ID sentinel (newer upstream order)", () => {
+    const out = parseTrailers(`  CHAT_ID:${CUID}\nHi back!`);
+    expect(out.content).toBe("Hi back!");
+    expect(out.chatId).toBe(CUID);
+  });
+
   it("strips the perplexity CITATIONS payload and parses URLs", () => {
     const json = JSON.stringify(URLS);
     const out = parseTrailers(`answer text CITATIONS:${json}`);

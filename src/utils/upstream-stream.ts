@@ -16,6 +16,12 @@ const HOLDBACK_CHARS = 100;
 const CITATIONS_RE = /CITATIONS:(\[[\s\S]*?\])/;
 const CITATIONS_MARKER = "CITATIONS:[";
 const CHAT_ID_MARKER_RE = /CHAT_ID:c[a-z0-9]{20,}/;
+// Newer responses lead with the sentinel instead (`CHAT_ID:<cuid>\n<prose>`).
+const LEADING_SENTINEL_RE = /^\s*CHAT_ID:(c[a-z0-9]{20,})(?![a-z0-9])\s*/;
+// A buffer that may still grow into a leading sentinel: a prefix of the marker,
+// or the marker with a cuid that may not have finished arriving.
+const PARTIAL_LEADING_RE =
+  /^\s*(?:C(?:H(?:A(?:T(?:_(?:I(?:D(?::(?:c[a-z0-9]*)?)?)?)?)?)?)?)?)?$/;
 
 export interface ParsedUpstream {
   content: string;
@@ -40,13 +46,19 @@ export async function collectUpstream(
 }
 
 /**
- * Strip trailing CHAT_ID sentinel and perplexity CITATIONS payload from a
+ * Strip the CHAT_ID sentinel (leading or trailing) and perplexity CITATIONS payload from a
  * fully-buffered upstream response. Order-tolerant: CITATIONS is matched
  * with no anchor first, so either ordering (CITATIONS-then-CHAT_ID or
  * CHAT_ID-then-CITATIONS) is handled.
  */
 export function parseTrailers(buf: string): ParsedUpstream {
   let working = buf;
+  let chatId: string | null = null;
+  const lm = LEADING_SENTINEL_RE.exec(working);
+  if (lm) {
+    chatId = lm[1] ?? null;
+    working = working.slice(lm[0].length);
+  }
   let citations: readonly string[] = [];
 
   const cm = CITATIONS_RE.exec(working);
@@ -60,7 +72,6 @@ export function parseTrailers(buf: string): ParsedUpstream {
   }
 
   const sm = SENTINEL_RE.exec(working);
-  let chatId: string | null = null;
   if (sm) {
     chatId = sm[1] ?? null;
     working = working.slice(0, sm.index);
@@ -152,6 +163,9 @@ export function streamUpstreamAsOpenAI(
     async start(controller) {
       const reader = body.getReader();
       let pending = "";
+      // Until the head of the stream is known not to be (or no longer to be) a
+      // leading CHAT_ID sentinel, flush nothing.
+      let head = true;
 
       controller.enqueue(sse({ role: "assistant" }));
 
@@ -162,6 +176,12 @@ export function streamUpstreamAsOpenAI(
           if (!value) continue;
 
           pending += decoder.decode(value, { stream: true });
+
+          if (head) {
+            if (PARTIAL_LEADING_RE.test(pending)) continue;
+            pending = pending.replace(LEADING_SENTINEL_RE, "");
+            head = false;
+          }
 
           const boundary = flushBoundary(pending);
           if (boundary > 0) {
