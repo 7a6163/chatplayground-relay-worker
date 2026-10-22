@@ -286,6 +286,42 @@ describe("POST /v1/chat/completions — upstream request", () => {
     ]);
   });
 
+  it("treats developer as system and a null content as empty", async () => {
+    upstream(() => new Response(`ok${CHAT_ID}`));
+
+    const res = await post({
+      model: "gpt-5.6-luna",
+      messages: [
+        { role: "developer", content: "Be brief." },
+        { role: "user", content: "hi" },
+        // An assistant turn that only carried tool_calls.
+        { role: "assistant", content: null },
+        { role: "user", content: "again" },
+      ],
+    });
+    expect(res.status).toBe(200);
+    const sent = JSON.parse(chatCall()[1].body as string);
+
+    expect(sent.messages).toEqual([
+      {
+        role: "user",
+        content: "System: Be brief.\n\nUser: hi\n\nAssistant:\n\nUser: again",
+      },
+    ]);
+  });
+
+  it("maps a lone developer message to the system role", async () => {
+    upstream(() => new Response(`ok${CHAT_ID}`));
+
+    await post({
+      model: "gpt-5.6-luna",
+      messages: [{ role: "developer", content: "hi" }],
+    });
+    const sent = JSON.parse(chatCall()[1].body as string);
+
+    expect(sent.messages).toEqual([{ role: "system", content: "hi" }]);
+  });
+
   it("joins a text-only history into a single string", async () => {
     upstream(() => new Response(`ok${CHAT_ID}`));
 
@@ -393,6 +429,35 @@ describe("POST /v1/chat/completions — streaming", () => {
     expect(deltas.join("")).toBe(`${prose}!`);
     // Prose flowed live rather than being held until the end of the stream.
     expect(deltas.length).toBeGreaterThan(1);
+  });
+
+  it("never splits a surrogate pair across deltas", async () => {
+    const enc = new TextEncoder();
+    // The first chunk alone puts the 100-char holdback cut exactly between
+    // the emoji's two halves; the sentinel arrives in a later chunk.
+    const prose = `${"a".repeat(50)}😀${"b".repeat(99)}`;
+    upstream(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(enc.encode(prose));
+              c.enqueue(enc.encode(CHAT_ID));
+              c.close();
+            },
+          }),
+        ),
+    );
+
+    const deltas = (await sse(await post({ ...hello, stream: true })))
+      .filter((e) => e !== "[DONE]")
+      .map((e) => JSON.parse(e).choices[0].delta.content)
+      .filter((t): t is string => t !== undefined);
+
+    const lone =
+      /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+    expect(deltas.some((d) => lone.test(d))).toBe(false);
+    expect(deltas.join("")).toBe(prose);
   });
 
   it("appends the Sources block as a final delta", async () => {

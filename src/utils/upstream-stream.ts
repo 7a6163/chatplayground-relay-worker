@@ -215,5 +215,9 @@ function flushBoundary(pending: string): number {
   if (citIdx >= 0 && cidIdx >= 0) return Math.min(citIdx, cidIdx);
   if (citIdx >= 0) return citIdx;
   if (cidIdx >= 0) return cidIdx;
-  return Math.max(0, pending.length - HOLDBACK_CHARS);
+  const cut = Math.max(0, pending.length - HOLDBACK_CHARS);
+  // Never split a surrogate pair: a lone half breaks clients that decode each
+  // chunk on its own (Python's openai SDK raises on encode).
+  const code = pending.charCodeAt(cut - 1);
+  return code >= 0xd800 && code <= 0xdbff ? cut - 1 : cut;
 }

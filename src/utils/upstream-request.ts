@@ -58,9 +58,19 @@ export function buildUpstreamRequest(
 
 const ROLE_LABEL = {
   system: "System",
+  developer: "System",
   user: "User",
   assistant: "Assistant",
   tool: "Tool",
+} as const;
+
+// No endpoint has a tool or developer role.
+const UPSTREAM_ROLE = {
+  system: "system",
+  developer: "system",
+  user: "user",
+  assistant: "assistant",
+  tool: "user",
 } as const;
 
 /**
@@ -73,19 +83,15 @@ const ROLE_LABEL = {
 function collapseHistory(messages: OpenAIMessage[]): UpstreamMessage[] {
   const [only] = messages;
   if (messages.length === 1 && only) {
-    // No endpoint has a tool role.
-    return [
-      {
-        role: only.role === "tool" ? "user" : only.role,
-        content: only.content,
-      },
-    ];
+    return [{ role: UPSTREAM_ROLE[only.role], content: only.content ?? "" }];
   }
 
   const parts: UpstreamContentPart[] = [];
   for (const m of messages) {
     const label = ROLE_LABEL[m.role];
-    if (typeof m.content === "string") {
+    if (m.content === null) {
+      parts.push({ type: "text", text: `${label}:` });
+    } else if (typeof m.content === "string") {
       parts.push({ type: "text", text: `${label}: ${m.content}` });
     } else {
       parts.push({ type: "text", text: `${label}:` }, ...m.content);
