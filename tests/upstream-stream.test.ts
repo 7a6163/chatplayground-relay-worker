@@ -191,6 +191,13 @@ describe("streamUpstreamAsOpenAI — prose that says CITATIONS:[", () => {
   });
 });
 
+describe("streamUpstreamAsOpenAI — empty reply", () => {
+  it("emits no content when upstream sends only the sentinel", async () => {
+    // The head never resolves, so the leading rule must run at EOF.
+    expect(await deltas([`  CHAT_ID:${CUID}`])).toEqual([]);
+  });
+});
+
 describe("streamUpstreamAsOpenAI — cancellation", () => {
   it("cancels the upstream read when the client goes away", async () => {
     const cancel = vi.fn();

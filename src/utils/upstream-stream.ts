@@ -59,7 +59,8 @@ export function parseTrailers(buf: string): ParsedUpstream {
   const lm = LEADING_SENTINEL_RE.exec(buf);
   if (!lm) return parseTail(buf);
   const rest = parseTail(buf.slice(lm[0].length));
-  return { ...rest, chatId: rest.chatId ?? lm[1] ?? null };
+  // The cuid group always captures when the regex matches.
+  return { ...rest, chatId: rest.chatId ?? lm[1]! };
 }
 
 /** parseTrailers without the leading-sentinel rule. */

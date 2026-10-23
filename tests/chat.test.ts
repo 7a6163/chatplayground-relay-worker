@@ -310,6 +310,18 @@ describe("POST /v1/chat/completions — upstream request", () => {
     ]);
   });
 
+  it("sends a lone null content as an empty string", async () => {
+    upstream(() => new Response(`ok${CHAT_ID}`));
+
+    await post({
+      model: "gpt-5.6-luna",
+      messages: [{ role: "user", content: null }],
+    });
+    const sent = JSON.parse(chatCall()[1].body as string);
+
+    expect(sent.messages).toEqual([{ role: "user", content: "" }]);
+  });
+
   it("maps a lone developer message to the system role", async () => {
     upstream(() => new Response(`ok${CHAT_ID}`));
 
