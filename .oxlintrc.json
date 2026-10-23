@@ -6,5 +6,13 @@
   },
   "rules": {
     "typescript/no-explicit-any": "error"
-  }
+  },
+  "overrides": [
+    {
+      "files": ["tests/**"],
+      "rules": {
+        "unicorn/consistent-function-scoping": "off"
+      }
+    }
+  ]
 }
