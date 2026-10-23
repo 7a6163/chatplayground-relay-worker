@@ -72,6 +72,17 @@ describe("getModels — the three layers", () => {
     expect(JSON.parse(value)[0].id).toBe("gpt-5.6-luna");
     expect(opts.expirationTtl).toBe(3600);
   });
+
+  it("still serves the registry when the KV write fails", async () => {
+    const MODEL_CACHE = kv();
+    // KV allows one write per second per key; concurrent refills lose.
+    MODEL_CACHE.put.mockRejectedValue(new Error("KV PUT failed: 429"));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json([entry()]));
+
+    const models = await getModels({ ...env, MODEL_CACHE });
+    expect(models[0]?.id).toBe("gpt-5.6-luna");
+  });
 });
 
 describe("getModels — parsing the feed", () => {

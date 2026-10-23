@@ -15,7 +15,7 @@
     "moduleResolution": "Bundler",
     "module": "es2022",
     "noEmit": true,
-    "lib": ["es2022"],
+    "lib": ["es2023"],
     "types": ["@cloudflare/workers-types"]
   },
   "exclude": ["node_modules", "dist"],

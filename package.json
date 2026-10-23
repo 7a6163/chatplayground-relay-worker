@@ -1,6 +1,6 @@
 {
   "name": "chatplayground-relay",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "OpenAI-compatible Cloudflare Worker relay for chatplayground.ai (BYOK, stateless)",
   "type": "module",
   "scripts": {
@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "format": "oxfmt src tests",
     "format:check": "oxfmt --check src tests",
-    "lint": "oxlint src",
+    "lint": "oxlint src tests",
     "check": "npm run format:check && npm run lint",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
@@ -24,13 +24,13 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "hono": "^4.13.7"
+    "hono": "^4.13.13"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260906.1",
     "@vitest/coverage-v8": "^5.0.0",
-    "oxfmt": "^0.66.0",
-    "oxlint": "^1.81.0",
+    "oxfmt": "^0.74.0",
+    "oxlint": "^1.89.0",
     "typescript": "^5.9.3",
     "vitest": "^5.0.0",
     "wrangler": "^4.129.0"

@@ -40,6 +40,7 @@ function clerkStub(url: string): Response {
 
 // oxlint-disable-next-line typescript/no-explicit-any -- minimal test env stub
 function call(env: any, headers: Record<string, string>) {
+  // oxlint-disable-next-line typescript/no-explicit-any -- minimal test env stub
   const app = new Hono<any>();
   app.onError(errorHandler);
   app.use("*", auth);

@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  collectUpstream,
   formatCitations,
   inlineCitationLinks,
   parseTrailers,
+  streamUpstreamAsOpenAI,
 } from "../src/utils/upstream-stream";
 
 const CUID = "cabcdefghijklmnopqrstuvwx"; // 24 chars after the leading "c"
@@ -27,6 +29,12 @@ describe("parseTrailers", () => {
     expect(out.content).toBe("prose\n");
     expect(out.chatId).toBe(CUID);
     expect(out.citations).toEqual([]);
+  });
+
+  it("strips a leading CHAT_ID sentinel (newer upstream order)", () => {
+    const out = parseTrailers(`  CHAT_ID:${CUID}\nHi back!`);
+    expect(out.content).toBe("Hi back!");
+    expect(out.chatId).toBe(CUID);
   });
 
   it("strips the perplexity CITATIONS payload and parses URLs", () => {
@@ -100,5 +108,110 @@ describe("inlineCitationLinks", () => {
   it("leaves out-of-range markers as literal text", () => {
     const out = inlineCitationLinks("a [9] z", URLS);
     expect(out).toBe("a [9] z");
+  });
+});
+
+const META = { id: "chatcmpl-x", model: "m", created: 0 };
+
+function upstreamOf(pieces: string[]): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
+  return new ReadableStream({
+    start(c) {
+      for (const p of pieces) c.enqueue(enc.encode(p));
+      c.close();
+    },
+  });
+}
+
+/** Content deltas, in order, from the SSE the relay emits. */
+async function deltas(pieces: string[]): Promise<string[]> {
+  const sse = await new Response(
+    streamUpstreamAsOpenAI(upstreamOf(pieces), META),
+  ).text();
+  return sse
+    .split("\n\n")
+    .filter((b) => b.startsWith("data: {"))
+    .map((b) => JSON.parse(b.slice(6)).choices[0].delta.content)
+    .filter((t): t is string => t !== undefined);
+}
+
+describe("streamUpstreamAsOpenAI — markers away from the end", () => {
+  const prose = "word ".repeat(100); // 500 chars, well past the holdback
+
+  it("keeps flowing past a CHAT_ID mid-prose, matching the buffered path", async () => {
+    const pieces = [`See CHAT_ID:${CUID} here. `, prose, prose, prose];
+
+    const out = await deltas(pieces);
+    const buffered = await collectUpstream(upstreamOf(pieces));
+
+    expect(out.join("")).toBe(buffered.content);
+    expect(out.join("")).toBe(`See  here. ${prose}${prose}${prose}`);
+    // Flushed chunk by chunk, not held until EOF.
+    expect(out.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("cuts a leading CITATIONS block out and still appends Sources", async () => {
+    const json = JSON.stringify(URLS);
+    const out = await deltas([
+      `CITATIONS:${json}`,
+      prose,
+      prose,
+      `CHAT_ID:${CUID}`,
+    ]);
+
+    expect(out.join("")).toBe(`${prose}${prose}${formatCitations(URLS)}`);
+    expect(out.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("holds an unclosed CITATIONS array that outgrows the holdback", async () => {
+    const half = JSON.stringify(URLS).slice(0, -1); // no closing ]
+    const out = await deltas([
+      "Answer. ",
+      `CITATIONS:${half}`,
+      `,"${"https://example.com/".padEnd(200, "x")}"]`,
+      `CHAT_ID:${CUID}`,
+    ]);
+
+    // The raw array never reaches the client, even in part.
+    expect(out.some((d) => d.includes("CITATIONS"))).toBe(false);
+    expect(out.join("")).toContain("**Sources**");
+  });
+});
+
+describe("streamUpstreamAsOpenAI — prose that says CITATIONS:[", () => {
+  it("releases an array that never closes instead of holding to EOF", async () => {
+    const prose = "word ".repeat(1000); // 5,000 chars per chunk
+    const pieces = ["Use CITATIONS:[ like this. ", ...Array(8).fill(prose)];
+
+    const out = await deltas(pieces);
+
+    expect(out.join("")).toBe(`Use CITATIONS:[ like this. ${prose.repeat(8)}`);
+    // Released once past the cap, then flowing — not one delta at EOF.
+    expect(out.length).toBeGreaterThan(2);
+  });
+});
+
+describe("streamUpstreamAsOpenAI — empty reply", () => {
+  it("emits no content when upstream sends only the sentinel", async () => {
+    // The head never resolves, so the leading rule must run at EOF.
+    expect(await deltas([`  CHAT_ID:${CUID}`])).toEqual([]);
+  });
+});
+
+describe("streamUpstreamAsOpenAI — cancellation", () => {
+  it("cancels the upstream read when the client goes away", async () => {
+    const cancel = vi.fn();
+    const upstream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode("x".repeat(500)));
+      },
+      cancel,
+    });
+
+    const reader = streamUpstreamAsOpenAI(upstream, META).getReader();
+    await reader.read(); // the role delta
+    await reader.cancel("client disconnected");
+
+    expect(cancel).toHaveBeenCalledWith("client disconnected");
   });
 });

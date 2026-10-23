@@ -81,7 +81,7 @@ describe("buildUpstreamRequest — per-endpoint body shape", () => {
     const { endpoint, body } = buildUpstreamRequest(req, PERPLEXITY_MODEL);
     expect(endpoint).toBe("perplexity");
     expect(body).not.toHaveProperty("model");
-    expect(Object.keys(body).sort()).toEqual([
+    expect(Object.keys(body).toSorted()).toEqual([
       "apiKey",
       "botId",
       "chatId",

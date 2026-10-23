@@ -34,9 +34,11 @@ export async function getModels(env: DiscoveryEnv): Promise<ModelEntry[]> {
     if (fresh.length === 0)
       throw new Error("no chat models in /api/models feed");
     if (env.MODEL_CACHE) {
+      // A failed write (e.g. KV's 1 write/sec/key limit when isolates refill
+      // together) only costs the cache; the registry in hand is still good.
       await env.MODEL_CACHE.put(CACHE_KEY, JSON.stringify(fresh), {
         expirationTtl: KV_TTL_S,
-      });
+      }).catch((err) => console.error("Model cache write failed.", err));
     }
     memCache = { at: Date.now(), data: fresh };
     return fresh;

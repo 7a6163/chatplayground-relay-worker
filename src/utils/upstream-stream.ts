@@ -3,11 +3,16 @@ import type {
   ChatCompletionChunkDelta,
 } from "../types/openai";
 
-// chatplayground appends `CHAT_ID:<cuid>` at the very end of the stream as a
-// sentinel. CUID format: `c` + ≥20 chars of [a-z0-9]. We strip it before
-// emitting content.
-const SENTINEL_RE = /CHAT_ID:(c[a-z0-9]{20,})$/;
+// chatplayground marks the stream with a `CHAT_ID:<cuid>` sentinel. CUID
+// format: `c` + ≥20 chars of [a-z0-9]. It has moved from the very end to the
+// very start once already, so a complete one is stripped wherever it lands.
+const SENTINEL_RE = /CHAT_ID:(c[a-z0-9]{20,})(?![a-z0-9])/;
+// Mid-stream the cuid may still be arriving: complete only once a non-cuid
+// character follows it.
+const STREAM_SENTINEL_RE = /CHAT_ID:c[a-z0-9]{20,}(?=[^a-z0-9])/;
 const HOLDBACK_CHARS = 100;
+// A real citation list is a handful of URLs, far below this.
+const MAX_CITATIONS_CHARS = 16_384;
 
 // perplexity emits its citation list as a trailing chunk of the form
 // `CITATIONS:["url1","url2",...]`. The web client parses it as structured
@@ -15,7 +20,12 @@ const HOLDBACK_CHARS = 100;
 // OpenAI-compatible clients render proper links.
 const CITATIONS_RE = /CITATIONS:(\[[\s\S]*?\])/;
 const CITATIONS_MARKER = "CITATIONS:[";
-const CHAT_ID_MARKER_RE = /CHAT_ID:c[a-z0-9]{20,}/;
+// Newer responses lead with the sentinel instead (`CHAT_ID:<cuid>\n<prose>`).
+const LEADING_SENTINEL_RE = /^\s*CHAT_ID:(c[a-z0-9]{20,})(?![a-z0-9])\s*/;
+// A buffer that may still grow into a leading sentinel: a prefix of the marker,
+// or the marker with a cuid that may not have finished arriving.
+const PARTIAL_LEADING_RE =
+  /^\s*(?:C(?:H(?:A(?:T(?:_(?:I(?:D(?::(?:c[a-z0-9]*)?)?)?)?)?)?)?)?)?$/;
 
 export interface ParsedUpstream {
   content: string;
@@ -40,13 +50,23 @@ export async function collectUpstream(
 }
 
 /**
- * Strip trailing CHAT_ID sentinel and perplexity CITATIONS payload from a
- * fully-buffered upstream response. Order-tolerant: CITATIONS is matched
- * with no anchor first, so either ordering (CITATIONS-then-CHAT_ID or
- * CHAT_ID-then-CITATIONS) is handled.
+ * Strip the CHAT_ID sentinel and perplexity CITATIONS payload from a
+ * fully-buffered upstream response. A leading sentinel also takes the
+ * whitespace around it. Both are matched with no anchor, so either order
+ * (CITATIONS-then-CHAT_ID or CHAT_ID-then-CITATIONS) is handled.
  */
 export function parseTrailers(buf: string): ParsedUpstream {
+  const lm = LEADING_SENTINEL_RE.exec(buf);
+  if (!lm) return parseTail(buf);
+  const rest = parseTail(buf.slice(lm[0].length));
+  // The cuid group always captures when the regex matches.
+  return { ...rest, chatId: rest.chatId ?? lm[1]! };
+}
+
+/** parseTrailers without the leading-sentinel rule. */
+function parseTail(buf: string): ParsedUpstream {
   let working = buf;
+  let chatId: string | null = null;
   let citations: readonly string[] = [];
 
   const cm = CITATIONS_RE.exec(working);
@@ -60,10 +80,10 @@ export function parseTrailers(buf: string): ParsedUpstream {
   }
 
   const sm = SENTINEL_RE.exec(working);
-  let chatId: string | null = null;
   if (sm) {
     chatId = sm[1] ?? null;
-    working = working.slice(0, sm.index);
+    working =
+      working.slice(0, sm.index) + working.slice(sm.index + sm[0].length);
   }
 
   return { content: working, chatId, citations };
@@ -117,15 +137,16 @@ interface ChunkMeta {
 /**
  * Wrap upstream text stream as OpenAI-format chat.completion.chunk SSE.
  *
- * Flush boundary: until either trailer marker (CITATIONS or CHAT_ID) appears
- * in the buffer, we hold back HOLDBACK_CHARS to guard against a partial
- * sentinel landing on a chunk boundary. Once a marker shows up, we lock the
- * flush boundary at the earliest marker and stop flushing past it, so the
- * trailer never reaches the client mid-stream.
+ * Flush boundary: a complete marker (CHAT_ID or a parseable CITATIONS array)
+ * is cut out of the buffer as soon as it is whole, wherever it sits, so prose
+ * keeps flowing past it. Otherwise we hold back HOLDBACK_CHARS against a
+ * marker split across chunks — and, since a citations array can outgrow
+ * that, hold at an unclosed `CITATIONS:[` until it closes (within a cap).
  *
  * At stream end we parse the held-back tail, emit any remaining prose, and —
  * if perplexity citations were collected — append a Markdown sources block
- * as one final delta before the `[DONE]` terminator.
+ * as one final delta before the `[DONE]` terminator. Cancelling the stream
+ * (client gone) cancels the upstream read.
  */
 export function streamUpstreamAsOpenAI(
   body: ReadableStream<Uint8Array>,
@@ -148,10 +169,15 @@ export function streamUpstreamAsOpenAI(
     return encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`);
   }
 
+  const reader = body.getReader();
+
   return new ReadableStream({
     async start(controller) {
-      const reader = body.getReader();
       let pending = "";
+      const citations: string[] = [];
+      // Until the head of the stream is known not to be (or no longer to be) a
+      // leading CHAT_ID sentinel, flush nothing.
+      let head = true;
 
       controller.enqueue(sse({ role: "assistant" }));
 
@@ -163,6 +189,13 @@ export function streamUpstreamAsOpenAI(
 
           pending += decoder.decode(value, { stream: true });
 
+          if (head) {
+            if (PARTIAL_LEADING_RE.test(pending)) continue;
+            pending = pending.replace(LEADING_SENTINEL_RE, "");
+            head = false;
+          }
+
+          pending = cutMarkers(pending, citations);
           const boundary = flushBoundary(pending);
           if (boundary > 0) {
             const out = pending.slice(0, boundary);
@@ -172,9 +205,10 @@ export function streamUpstreamAsOpenAI(
         }
 
         pending += decoder.decode();
-        const { content, citations } = parseTrailers(pending);
-        if (content) controller.enqueue(sse({ content }));
-        const sources = formatCitations(citations);
+        // Past the head, a sentinel at the start of the tail is not leading.
+        const tail = head ? parseTrailers(pending) : parseTail(pending);
+        if (tail.content) controller.enqueue(sse({ content: tail.content }));
+        const sources = formatCitations([...citations, ...tail.citations]);
         if (sources) controller.enqueue(sse({ content: sources }));
 
         controller.enqueue(sse({}, "stop"));
@@ -184,16 +218,42 @@ export function streamUpstreamAsOpenAI(
         controller.error(err);
       }
     },
+    // The client went away: stop reading so upstream can stop generating.
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
   });
 }
 
-function flushBoundary(pending: string): number {
-  const citIdx = pending.indexOf(CITATIONS_MARKER);
-  const cidMatch = CHAT_ID_MARKER_RE.exec(pending);
-  const cidIdx = cidMatch ? cidMatch.index : -1;
+/** Cut complete markers out of the buffer, collecting citations. */
+function cutMarkers(pending: string, citations: string[]): string {
+  let out = pending;
+  const cm = CITATIONS_RE.exec(out);
+  const parsed = cm?.[1] ? safeParseStringArray(cm[1]) : null;
+  if (cm && parsed) {
+    citations.push(...parsed);
+    out = out.slice(0, cm.index) + out.slice(cm.index + cm[0].length);
+  }
+  const sm = STREAM_SENTINEL_RE.exec(out);
+  if (sm) out = out.slice(0, sm.index) + out.slice(sm.index + sm[0].length);
+  return out;
+}
 
-  if (citIdx >= 0 && cidIdx >= 0) return Math.min(citIdx, cidIdx);
-  if (citIdx >= 0) return citIdx;
-  if (cidIdx >= 0) return cidIdx;
-  return Math.max(0, pending.length - HOLDBACK_CHARS);
+function flushBoundary(pending: string): number {
+  let cut = Math.max(0, pending.length - HOLDBACK_CHARS);
+  // An unclosed array is held — but only so far: past MAX_CITATIONS_CHARS it
+  // is prose that happens to say `CITATIONS:[`, and holding it until EOF would
+  // rescan an ever-growing buffer on every chunk.
+  const citIdx = pending.indexOf(CITATIONS_MARKER);
+  if (
+    citIdx >= 0 &&
+    pending.length - citIdx < MAX_CITATIONS_CHARS &&
+    !pending.includes("]", citIdx)
+  ) {
+    cut = Math.min(cut, citIdx);
+  }
+  // Never split a surrogate pair: a lone half breaks clients that decode each
+  // chunk on its own (Python's openai SDK raises on encode).
+  const code = pending.charCodeAt(cut - 1);
+  return code >= 0xd800 && code <= 0xdbff ? cut - 1 : cut;
 }
