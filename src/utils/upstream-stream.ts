@@ -29,7 +29,7 @@ export async function* readEvents(
     const { value, done } = await reader.read();
     buf += done ? decoder.decode() : decoder.decode(value, { stream: true });
     const lines = buf.split("\n");
-    buf = done ? "" : (lines.pop() ?? "");
+    buf = done ? "" : lines.pop()!; // split() never returns []
     for (const line of lines) {
       const event = parseLine(line);
       if (event) yield event;

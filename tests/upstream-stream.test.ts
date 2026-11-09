@@ -57,6 +57,18 @@ describe("collectUpstream", () => {
     expect(out.usage).toEqual({ inputTokens: 36, outputTokens: 12 });
   });
 
+  it("treats a missing or non-numeric count as 0", async () => {
+    const out = await collectUpstream(
+      upstreamOf([
+        sse(text("x"), {
+          type: "finish",
+          messageMetadata: { usage: { inputTokens: 5, outputTokens: "4" } },
+        }),
+      ]),
+    );
+    expect(out.usage).toEqual({ inputTokens: 5, outputTokens: 0 });
+  });
+
   it("reports null usage when finish carries no counts", async () => {
     const out = await collectUpstream(
       upstreamOf([sse(text("x"), { type: "finish" })]),
@@ -78,7 +90,14 @@ describe("collectUpstream", () => {
   });
 
   it("parses events split mid-line across chunks, and skips junk lines", async () => {
-    const raw = `: comment\ndata: not json\n\n${sse(text("hello"), text(" world"))}`;
+    const junk = [
+      ": comment",
+      "data: not json",
+      "data: 42",
+      'data: {"no":"type"}',
+      'data: {"type":"text-delta"}', // no delta
+    ].join("\n");
+    const raw = `${junk}\n\n${sse(text("hello"), text(" world"))}`;
     const out = await collectUpstream(
       upstreamOf([raw.slice(0, 40), raw.slice(40, 90), raw.slice(90)]),
     );
@@ -93,6 +112,14 @@ describe("collectUpstream", () => {
     ).rejects.toMatchObject({
       status: 502,
       message: "Upstream failed mid-reply: boom",
+    });
+  });
+
+  it("says so when an error event carries no text", async () => {
+    await expect(
+      collectUpstream(upstreamOf([sse({ type: "error" })])),
+    ).rejects.toMatchObject({
+      message: "Upstream failed mid-reply: no message",
     });
   });
 });
@@ -174,7 +201,10 @@ describe("streamUpstreamAsOpenAI", () => {
   });
 
   it("never splits a surrogate pair across deltas", async () => {
-    const evs = await events([sse(text("a\ud83d"), text("\ude00b"))]);
+    // The lone high half arrives as its own delta, then a delta with no text.
+    const evs = await events([
+      sse(text("a"), text("\ud83d"), { type: "text-delta" }, text("\ude00b")),
+    ]);
     expect(contentOf(evs)).toEqual(["a", "😀b"]);
   });
 

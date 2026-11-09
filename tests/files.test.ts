@@ -58,6 +58,15 @@ describe("POST /v1/files", () => {
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 
+  it("rejects a body that isn't valid multipart", async () => {
+    vi.spyOn(globalThis, "fetch");
+    const res = await post("garbage", {
+      "content-type": "multipart/form-data; boundary=----x",
+    });
+    expect(res.status).toBe(400);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
   it("uploads through upstream's flow and returns the fileId as the id", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);

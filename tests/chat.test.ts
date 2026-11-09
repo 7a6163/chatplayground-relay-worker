@@ -129,6 +129,12 @@ describe("POST /v1/chat/completions — model resolution", () => {
     expect((await envelope(res)).code).toBe("model_not_found");
   });
 
+  it("404s a provider prefix with no slug after it", async () => {
+    upstream(() => new Response("unreachable"));
+    const res = await post({ ...hello, model: "openai/" });
+    expect(res.status).toBe(404);
+  });
+
   it("accepts a provider/slug id for a known model", async () => {
     upstream(ok);
     const res = await post({ ...hello, model: "openai/gpt-6-luna" });

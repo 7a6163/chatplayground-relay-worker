@@ -19,7 +19,8 @@ export function findModel(
   if (slash > 0) {
     const provider = input.slice(0, slash);
     const id = input.slice(slash + 1);
-    if (provider && id) return { id, provider };
+    // provider is non-empty (slash > 0); "openai/" leaves no slug
+    if (id) return { id, provider };
   }
 
   return null;

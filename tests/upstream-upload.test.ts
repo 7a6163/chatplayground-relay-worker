@@ -117,6 +117,55 @@ describe("uploadImage", () => {
       status: 502,
     });
   });
+  it("names a type-less blob in the error", async () => {
+    upstream();
+    await expect(
+      uploadImage(new Blob(["x"]), "a", "jwt", env),
+    ).rejects.toMatchObject({ message: expect.stringContaining("'unknown'") });
+  });
+
+  it("PUTs with the image's own type when presign sends no headers", async () => {
+    const fetch = upstream((u) =>
+      u.endsWith("/presign")
+        ? Response.json({ fileId: "f1", uploadUrl: "https://r2.test/put" })
+        : undefined,
+    );
+    await uploadImage(png(), "a", "jwt", env);
+    expect((fetch.mock.calls[1] as [string, RequestInit])[1].headers).toEqual({
+      "content-type": "image/png",
+    });
+  });
+
+  it("reports a failed step even when its body is empty or unreadable", async () => {
+    upstream((u) =>
+      u.endsWith("/presign") ? new Response("", { status: 500 }) : undefined,
+    );
+    await expect(uploadImage(png(), "a", "jwt", env)).rejects.toMatchObject({
+      message: "Upload failed: upstream returned 500.",
+    });
+
+    vi.restoreAllMocks();
+    const broken = new ReadableStream({
+      start(c) {
+        c.error(new Error("reset"));
+      },
+    });
+    upstream((u) =>
+      u.endsWith("/presign")
+        ? new Response(broken, { status: 500 })
+        : undefined,
+    );
+    await expect(uploadImage(png(), "a", "jwt", env)).rejects.toMatchObject({
+      message: "Upload failed: upstream returned 500.",
+    });
+  });
+
+  it("502s when complete answers 200 with something that isn't JSON", async () => {
+    upstream((u) => (u.endsWith("/complete") ? new Response("ok") : undefined));
+    await expect(uploadImage(png(), "a", "jwt", env)).rejects.toMatchObject({
+      status: 502,
+    });
+  });
 });
 
 describe("toFileId", () => {
@@ -180,6 +229,32 @@ describe("toFileId", () => {
     await expect(
       toFileId("https://i.test/big", "jwt", env),
     ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("400s an image URL that can't be reached at all", async () => {
+    upstream((u) => {
+      if (u === "https://down.test/a.png") throw new TypeError("fetch failed");
+      return undefined;
+    });
+    await expect(
+      toFileId("https://down.test/a.png", "jwt", env),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining("network error"),
+    });
+  });
+
+  it("names an image URL with no file name 'image'", async () => {
+    const fetch = upstream((u) =>
+      u === "https://i.test/"
+        ? new Response("png", { headers: { "content-type": "image/png" } })
+        : undefined,
+    );
+    await toFileId("https://i.test/", "jwt", env);
+    const body = JSON.parse(
+      String((fetch.mock.calls[1] as [string, RequestInit])[1].body),
+    );
+    expect(body.originalName).toBe("image");
   });
 
   it("treats anything else as an existing fileId", async () => {

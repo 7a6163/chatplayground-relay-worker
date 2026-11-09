@@ -41,7 +41,7 @@ export async function uploadImage(
     kind: "chat_image",
     mime,
     size: blob.size,
-    originalName: name || "image",
+    originalName: name,
   })) as { fileId?: unknown; uploadUrl?: unknown; headers?: unknown };
   if (
     typeof presign.fileId !== "string" ||

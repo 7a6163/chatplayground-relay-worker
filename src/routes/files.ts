@@ -30,7 +30,7 @@ files.post("/v1/files", async (c) => {
     object: "file",
     bytes: file.size,
     created_at: Math.floor(Date.now() / 1000),
-    filename: file.name || "image",
+    filename: file.name, // never empty: an empty filename parses as a string field
     purpose: "vision",
     status: "processed",
     status_details: null,
