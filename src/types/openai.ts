@@ -28,7 +28,7 @@ export interface ChatCompletionRequest {
   messages: OpenAIMessage[];
   stream?: boolean;
   // OpenAI extension fields we honor:
-  user?: string; // → chatplayground chatId (continue same chat)
+  user?: string; // → chatplayground conversationId (continue same chat)
   metadata?: { save?: boolean }; // → !noSave (default: noSave=true)
   // Fields accepted-and-ignored (no upstream equivalent):
   temperature?: number;

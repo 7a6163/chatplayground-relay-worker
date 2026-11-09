@@ -12,44 +12,45 @@ import { resetModelCache } from "../src/utils/model-discovery";
 // vitest.config.ts.
 
 const JWT = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyXzEyMyJ9.c2ln-bmF0dXJl";
-const CHAT_ID = "CHAT_ID:clm1234567890abcdefgh";
+
+/** An upstream reply: AI SDK UI-message stream events, then [DONE]. */
+function reply(...events: object[]): Response {
+  const body =
+    events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") +
+    "data: [DONE]\n\n";
+  return new Response(body, {
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+const text = (delta: string) => ({ type: "text-delta", id: "t", delta });
+const ok = () => reply(text("ok"));
 
 const env = {
-  UPSTREAM_CHAT_URL: "https://up.example.test/api/chat/azure",
+  UPSTREAM_CHAT_URL: "https://up.example.test/api/chat",
   UPSTREAM_ORIGIN: "https://web.example.test",
   UPSTREAM_REFERER: "https://web.example.test/",
-  UPSTREAM_UPLOAD_URL: "https://up.example.test/api/upload",
   CLERK_FAPI_URL: "https://clerk.example.test",
 };
 
-/** Two models, one per endpoint, mirroring the shape of /api/models. */
+/** Mirrors the shape of /api/models. */
 const FEED = [
+  { slug: "gpt-6-luna", provider: "openai", group: "chat", premiumOnly: false },
+  // At least one, or discover() logs that the field changed shape.
   {
-    botId: "gpt-5.6-luna",
-    modelName: "gpt-5.6-luna",
-    provider: "OpenAI",
+    slug: "sonar-pro",
+    provider: "perplexity",
     group: "chat",
-    endpoint: "azure",
-    premiumOnly: false,
-  },
-  {
-    botId: "perplexity-sonar",
-    modelName: "sonar",
-    provider: "Perplexity",
-    group: "chat",
-    endpoint: "perplexity",
-    // At least one, or discover() logs that the field changed shape.
     premiumOnly: true,
   },
-  { botId: "dall-e", modelName: "dall-e", provider: "OpenAI", group: "image" },
+  { slug: "gpt-image-2.5", provider: "openai", group: "image" },
 ];
 
-/** Serve the catalogue; delegate /api/chat/* to the test's own reply. */
-function upstream(reply: (url: string) => Response) {
+/** Serve the catalogue; delegate /api/chat to the test's own reply. */
+function upstream(respond: (url: string) => Response) {
   vi.spyOn(globalThis, "fetch").mockImplementation(
     async (input: RequestInfo | URL) => {
       const url = String(input);
-      return url.endsWith("/api/models") ? Response.json(FEED) : reply(url);
+      return url.endsWith("/api/models") ? Response.json(FEED) : respond(url);
     },
   );
 }
@@ -77,7 +78,7 @@ function post(body: unknown, testEnv: any = env) {
 }
 
 const hello = {
-  model: "gpt-5.6-luna",
+  model: "gpt-6-luna",
   messages: [{ role: "user", content: "Hello" }],
 };
 
@@ -114,7 +115,7 @@ describe("POST /v1/chat/completions — request validation", () => {
 
   it("rejects empty messages, naming the param", async () => {
     upstream(() => new Response("unreachable"));
-    const res = await post({ model: "gpt-5.6-luna", messages: [] });
+    const res = await post({ model: "gpt-6-luna", messages: [] });
     expect(res.status).toBe(400);
     expect((await envelope(res)).param).toBe("messages");
   });
@@ -128,11 +129,18 @@ describe("POST /v1/chat/completions — model resolution", () => {
     expect((await envelope(res)).code).toBe("model_not_found");
   });
 
-  it("passes an unknown provider/model through to the lmsys catch-all", async () => {
-    upstream(() => new Response(`ok${CHAT_ID}`));
+  it("accepts a provider/slug id for a known model", async () => {
+    upstream(ok);
+    const res = await post({ ...hello, model: "openai/gpt-6-luna" });
+    expect(res.status).toBe(200);
+    expect(JSON.parse(String(chatCall()[1].body)).modelSlug).toBe("gpt-6-luna");
+  });
+
+  it("passes an unknown provider/slug through as that slug", async () => {
+    upstream(ok);
     const res = await post({ ...hello, model: "meta/llama-9" });
     expect(res.status).toBe(200);
-    expect(chatCall()[0]).toBe("https://up.example.test/api/chat/lmsys");
+    expect(JSON.parse(String(chatCall()[1].body)).modelSlug).toBe("llama-9");
   });
 
   it("503s when discovery is down rather than claiming the model is gone", async () => {
@@ -182,8 +190,21 @@ describe("POST /v1/chat/completions — upstream failures", () => {
 });
 
 describe("POST /v1/chat/completions — non-streaming", () => {
-  it("returns an OpenAI envelope with the trailer stripped", async () => {
-    upstream(() => new Response(`Hi there!${CHAT_ID}`));
+  it("returns an OpenAI envelope with upstream's own token counts", async () => {
+    upstream(() =>
+      reply(
+        { type: "start", messageId: "m" },
+        { type: "reasoning-delta", id: "r", delta: "hmm" },
+        text("Hi "),
+        text("there!"),
+        {
+          type: "finish",
+          messageMetadata: {
+            usage: { inputTokens: 7, outputTokens: 3, reasoningTokens: 2 },
+          },
+        },
+      ),
+    );
 
     const res = await post(hello);
     expect(res.status).toBe(200);
@@ -191,7 +212,7 @@ describe("POST /v1/chat/completions — non-streaming", () => {
 
     expect(body.id).toMatch(/^chatcmpl-/);
     expect(body.object).toBe("chat.completion");
-    expect(body.model).toBe("gpt-5.6-luna");
+    expect(body.model).toBe("gpt-6-luna");
     expect(body.choices).toEqual([
       {
         index: 0,
@@ -199,7 +220,17 @@ describe("POST /v1/chat/completions — non-streaming", () => {
         finish_reason: "stop",
       },
     ]);
-    // ~4 chars per token: "Hello" → 2, "Hi there!" → 3.
+    expect(body.usage).toEqual({
+      prompt_tokens: 7,
+      completion_tokens: 5,
+      total_tokens: 12,
+    });
+  });
+
+  it("falls back to a chars/4 estimate when upstream sends no usage", async () => {
+    upstream(() => reply(text("Hi there!")));
+    const body = (await (await post(hello)).json()) as ChatCompletionResponse;
+    // "Hello" → 2, "Hi there!" → 3.
     expect(body.usage).toEqual({
       prompt_tokens: 2,
       completion_tokens: 3,
@@ -207,15 +238,16 @@ describe("POST /v1/chat/completions — non-streaming", () => {
     });
   });
 
-  it("inlines [N] markers and appends Sources, billing only the raw output", async () => {
-    upstream(
-      () =>
-        new Response(
-          `Paris [1] is nice.CITATIONS:["https://a.test"]${CHAT_ID}`,
-        ),
+  it("inlines [N] markers and appends Sources, estimating on the raw output", async () => {
+    upstream(() =>
+      reply(text("Paris [1] is nice."), {
+        type: "source-url",
+        sourceId: "s",
+        url: "https://a.test",
+      }),
     );
 
-    const res = await post({ ...hello, model: "perplexity-sonar" });
+    const res = await post({ ...hello, model: "sonar-pro" });
     const body = (await res.json()) as ChatCompletionResponse;
 
     expect(body.choices[0]?.message.content).toBe(
@@ -226,155 +258,167 @@ describe("POST /v1/chat/completions — non-streaming", () => {
     expect(body.usage.completion_tokens).toBe(5);
   });
 
-  it("counts text parts only when a message is multimodal", async () => {
-    upstream(() => new Response(`ok${CHAT_ID}`));
-
-    const res = await post({
-      model: "gpt-5.6-luna",
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "abcd" },
-            {
-              type: "image_url",
-              image_url: { url: `data:${"x".repeat(500)}` },
-            },
-          ],
-        },
-      ],
-    });
-    const body = (await res.json()) as ChatCompletionResponse;
-    expect(body.usage.prompt_tokens).toBe(1);
+  it("502s with upstream's text when the reply fails mid-stream", async () => {
+    upstream(() => reply(text("par"), { type: "error", errorText: "boom" }));
+    const res = await post(hello);
+    expect(res.status).toBe(502);
+    expect((await envelope(res)).message).toBe(
+      "Upstream failed mid-reply: boom",
+    );
   });
 });
 
 describe("POST /v1/chat/completions — upstream request", () => {
-  it("folds history into one user message, keeping images in place", async () => {
-    upstream(() => new Response(`ok${CHAT_ID}`));
-    const image = {
-      type: "image_url",
-      image_url: { url: "https://i.test/a.png" },
-    };
+  it("posts to the chat URL with the caller's JWT and the new body shape", async () => {
+    upstream(ok);
 
-    await post({
-      model: "gpt-5.6-luna",
-      messages: [
-        { role: "system", content: "Be brief." },
-        {
-          role: "user",
-          content: [{ type: "text", text: "What is this?" }, image],
-        },
-        { role: "assistant", content: "A cat." },
-        { role: "user", content: "Translate to Chinese" },
-      ],
-    });
-    const sent = JSON.parse(chatCall()[1].body as string);
-
-    expect(sent.messages).toEqual([
-      {
-        role: "user",
-        content: [
-          { type: "text", text: "System: Be brief." },
-          { type: "text", text: "User:" },
-          { type: "text", text: "What is this?" },
-          image,
-          { type: "text", text: "Assistant: A cat." },
-          { type: "text", text: "User: Translate to Chinese" },
-        ],
-      },
-    ]);
-  });
-
-  it("treats developer as system and a null content as empty", async () => {
-    upstream(() => new Response(`ok${CHAT_ID}`));
-
-    const res = await post({
-      model: "gpt-5.6-luna",
-      messages: [
-        { role: "developer", content: "Be brief." },
-        { role: "user", content: "hi" },
-        // An assistant turn that only carried tool_calls.
-        { role: "assistant", content: null },
-        { role: "user", content: "again" },
-      ],
-    });
-    expect(res.status).toBe(200);
-    const sent = JSON.parse(chatCall()[1].body as string);
-
-    expect(sent.messages).toEqual([
-      {
-        role: "user",
-        content: "System: Be brief.\n\nUser: hi\n\nAssistant:\n\nUser: again",
-      },
-    ]);
-  });
-
-  it("sends a lone null content as an empty string", async () => {
-    upstream(() => new Response(`ok${CHAT_ID}`));
-
-    await post({
-      model: "gpt-5.6-luna",
-      messages: [{ role: "user", content: null }],
-    });
-    const sent = JSON.parse(chatCall()[1].body as string);
-
-    expect(sent.messages).toEqual([{ role: "user", content: "" }]);
-  });
-
-  it("maps a lone developer message to the system role", async () => {
-    upstream(() => new Response(`ok${CHAT_ID}`));
-
-    await post({
-      model: "gpt-5.6-luna",
-      messages: [{ role: "developer", content: "hi" }],
-    });
-    const sent = JSON.parse(chatCall()[1].body as string);
-
-    expect(sent.messages).toEqual([{ role: "system", content: "hi" }]);
-  });
-
-  it("joins a text-only history into a single string", async () => {
-    upstream(() => new Response(`ok${CHAT_ID}`));
-
-    await post({
-      model: "gpt-5.6-luna",
-      messages: [
-        { role: "user", content: "hi" },
-        { role: "assistant", content: "hello" },
-        { role: "tool", content: "42" },
-      ],
-    });
-    const sent = JSON.parse(chatCall()[1].body as string);
-
-    expect(sent.messages).toEqual([
-      { role: "user", content: "User: hi\n\nAssistant: hello\n\nTool: 42" },
-    ]);
-  });
-
-  it("routes per model and forwards the caller's session JWT", async () => {
-    upstream(() => new Response(`ok${CHAT_ID}`));
-
-    await post({ ...hello, model: "perplexity-sonar", user: "cabc123" });
+    await post({ ...hello, user: "01a1bebe-a301" });
     const [url, init] = chatCall();
 
-    expect(url).toBe("https://up.example.test/api/chat/perplexity");
-    const headers = init.headers as Record<string, string>;
-    expect(headers.authorization).toBe(`Bearer ${JWT}`);
-    expect(JSON.parse(String(init.body))).toMatchObject({
-      modelName: "sonar",
-      botId: "perplexity-sonar",
-      chatId: "cabc123",
+    expect(url).toBe("https://up.example.test/api/chat");
+    expect(init.headers).toMatchObject({
+      authorization: `Bearer ${JWT}`,
+      "content-type": "application/json",
+      accept: "text/event-stream",
+    });
+    expect(JSON.parse(String(init.body))).toEqual({
+      modelSlug: "gpt-6-luna",
+      submissionId: expect.any(String),
+      message: { text: "Hello" },
+      conversationId: "01a1bebe-a301",
       noSave: true,
     });
   });
 
   it("honors metadata.save by clearing noSave", async () => {
-    upstream(() => new Response(`ok${CHAT_ID}`));
+    upstream(ok);
     await post({ ...hello, metadata: { save: true } });
     expect(JSON.parse(String(chatCall()[1].body))).toMatchObject({
       noSave: false,
     });
+  });
+
+  it("folds history into one role-labelled prompt", async () => {
+    upstream(ok);
+
+    const res = await post({
+      model: "gpt-6-luna",
+      messages: [
+        { role: "developer", content: "Be brief." },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "line one" },
+            { type: "text", text: "line two" },
+          ],
+        },
+        // An assistant turn that only carried tool_calls.
+        { role: "assistant", content: null },
+        { role: "tool", content: "42" },
+      ],
+    });
+    expect(res.status).toBe(200);
+
+    expect(JSON.parse(String(chatCall()[1].body)).message).toEqual({
+      text: "System: Be brief.\n\nUser: line one\nline two\n\nAssistant:\n\nTool: 42",
+    });
+  });
+
+  it("sends a lone message as bare text, null as empty", async () => {
+    upstream(ok);
+    await post({
+      model: "gpt-6-luna",
+      messages: [{ role: "user", content: null }],
+    });
+    expect(JSON.parse(String(chatCall()[1].body)).message).toEqual({
+      text: "",
+    });
+  });
+
+  it("uploads each image and attaches its fileId, keeping text separate", async () => {
+    const PNG = "data:image/png;base64," + btoa("\x89PNG fake");
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/models")) return Response.json(FEED);
+        if (url.endsWith("/api/uploads/presign")) {
+          const { originalName } = JSON.parse(String(init?.body));
+          return Response.json({
+            fileId: `f-${originalName}`,
+            uploadUrl: `https://r2.test/${originalName}`,
+            headers: { "Content-Type": "image/png" },
+          });
+        }
+        if (url.startsWith("https://r2.test/")) return new Response(null);
+        const done = /\/api\/uploads\/(.+)\/complete$/.exec(url);
+        if (done) return Response.json({ id: decodeURIComponent(done[1]!) });
+        if (url === "https://i.test/cat.png") {
+          return new Response("png", {
+            headers: { "content-type": "image/png" },
+          });
+        }
+        return ok();
+      },
+    );
+
+    const res = await post({
+      model: "gpt-6-luna",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Compare" },
+            { type: "image_url", image_url: { url: PNG } },
+            { type: "image_url", image_url: { url: "https://i.test/cat.png" } },
+          ],
+        },
+        // A fileId from POST /v1/files is attached as-is.
+        {
+          role: "user",
+          content: [{ type: "image_url", image_url: { url: "01a1-file" } }],
+        },
+      ],
+    });
+    expect(res.status).toBe(200);
+
+    const chatInit = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([u]) => String(u) === "https://up.example.test/api/chat",
+      )?.[1];
+    expect(JSON.parse(String(chatInit?.body)).message).toEqual({
+      text: "User: Compare\n\nUser:",
+      attachments: [
+        { fileId: "f-image" },
+        { fileId: "f-cat.png" },
+        { fileId: "01a1-file" },
+      ],
+    });
+  });
+
+  it("rejects more than four images before calling upstream", async () => {
+    upstream(ok);
+    const img = { type: "image_url", image_url: { url: "01a1-file" } };
+    const res = await post({
+      model: "gpt-6-luna",
+      messages: [{ role: "user", content: [img, img, img, img, img] }],
+    });
+    expect(res.status).toBe(400);
+    expect((await envelope(res)).message).toContain("At most 4 images");
+    // Only the catalogue was fetched.
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an image part with no url", async () => {
+    upstream(ok);
+    const res = await post({
+      model: "gpt-6-luna",
+      messages: [
+        { role: "user", content: [{ type: "image_url", image_url: {} }] },
+      ],
+    });
+    expect(res.status).toBe(400);
+    expect((await envelope(res)).param).toBe("messages");
   });
 });
 
@@ -387,8 +431,8 @@ describe("POST /v1/chat/completions — streaming", () => {
       .map((block) => block.slice("data: ".length));
   }
 
-  it("wraps the upstream text as chat.completion.chunk SSE", async () => {
-    upstream(() => new Response(`Hi there!${CHAT_ID}`));
+  it("re-emits upstream text deltas as chat.completion.chunk SSE", async () => {
+    upstream(() => reply(text("Hi "), text("there!")));
 
     const res = await post({ ...hello, stream: true });
     expect(res.status).toBe(200);
@@ -401,94 +445,29 @@ describe("POST /v1/chat/completions — streaming", () => {
 
     const chunks = events.slice(0, -1).map((e) => JSON.parse(e));
     expect(chunks[0].object).toBe("chat.completion.chunk");
-    expect(chunks[0].model).toBe("gpt-5.6-luna");
+    expect(chunks[0].model).toBe("gpt-6-luna");
     expect(chunks[0].choices[0].delta).toEqual({ role: "assistant" });
 
-    const text = chunks.map((c) => c.choices[0].delta.content ?? "").join("");
-    expect(text).toBe("Hi there!");
-    expect(chunks.at(-1).choices[0].finish_reason).toBe("stop");
-  });
-
-  it("streams past a leading CHAT_ID sentinel split across chunks", async () => {
-    const enc = new TextEncoder();
-    // Longer than the 100-char holdback, so a live flush is observable.
-    const prose = "a".repeat(150);
-    const pieces = [
-      "  CHAT_",
-      CHAT_ID.slice(5, 20),
-      `${CHAT_ID.slice(20)}\n${prose}`,
-      "!",
-    ];
-    upstream(
-      () =>
-        new Response(
-          new ReadableStream({
-            start(c) {
-              for (const p of pieces) c.enqueue(enc.encode(p));
-              c.close();
-            },
-          }),
-        ),
-    );
-
-    const chunks = (await sse(await post({ ...hello, stream: true })))
-      .filter((e) => e !== "[DONE]")
-      .map((e) => JSON.parse(e));
     const deltas = chunks
       .map((c) => c.choices[0].delta.content)
       .filter((t) => t !== undefined);
-
-    expect(deltas.join("")).toBe(`${prose}!`);
-    // Prose flowed live rather than being held until the end of the stream.
-    expect(deltas.length).toBeGreaterThan(1);
-  });
-
-  it("never splits a surrogate pair across deltas", async () => {
-    const enc = new TextEncoder();
-    // The first chunk alone puts the 100-char holdback cut exactly between
-    // the emoji's two halves; the sentinel arrives in a later chunk.
-    const prose = `${"a".repeat(50)}😀${"b".repeat(99)}`;
-    upstream(
-      () =>
-        new Response(
-          new ReadableStream({
-            start(c) {
-              c.enqueue(enc.encode(prose));
-              c.enqueue(enc.encode(CHAT_ID));
-              c.close();
-            },
-          }),
-        ),
-    );
-
-    const deltas = (await sse(await post({ ...hello, stream: true })))
-      .filter((e) => e !== "[DONE]")
-      .map((e) => JSON.parse(e).choices[0].delta.content)
-      .filter((t): t is string => t !== undefined);
-
-    const lone =
-      /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
-    expect(deltas.some((d) => lone.test(d))).toBe(false);
-    expect(deltas.join("")).toBe(prose);
+    expect(deltas).toEqual(["Hi ", "there!"]);
+    expect(chunks.at(-1).choices[0].finish_reason).toBe("stop");
   });
 
   it("appends the Sources block as a final delta", async () => {
-    upstream(
-      () => new Response(`See [1].CITATIONS:["https://a.test"]${CHAT_ID}`),
+    upstream(() =>
+      reply(text("See [1]."), { type: "source-url", url: "https://a.test" }),
     );
 
-    const res = await post({
-      ...hello,
-      model: "perplexity-sonar",
-      stream: true,
-    });
+    const res = await post({ ...hello, model: "sonar-pro", stream: true });
     const chunks = (await sse(res))
       .filter((e) => e !== "[DONE]")
       .map((e) => JSON.parse(e));
-    const text = chunks.map((c) => c.choices[0].delta.content ?? "").join("");
+    const all = chunks.map((c) => c.choices[0].delta.content ?? "").join("");
 
     // The streaming path can only append — [1] stays a literal marker.
-    expect(text).toBe(
+    expect(all).toBe(
       "See [1].\n\n---\n**Sources**\n\n1. [https://a.test](https://a.test)",
     );
   });

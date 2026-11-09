@@ -8,10 +8,9 @@ import { resetModelCache } from "../src/utils/model-discovery";
 // advertises. Routed through the real app, not a rebuilt one.
 
 const env = {
-  UPSTREAM_CHAT_URL: "https://up.example.test/api/chat/azure",
+  UPSTREAM_CHAT_URL: "https://up.example.test/api/chat",
   UPSTREAM_ORIGIN: "https://web.example.test",
   UPSTREAM_REFERER: "https://web.example.test/",
-  UPSTREAM_UPLOAD_URL: "https://up.example.test/api/upload",
   CLERK_FAPI_URL: "https://clerk.example.test",
 };
 

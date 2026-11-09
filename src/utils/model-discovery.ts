@@ -1,9 +1,8 @@
-import { toEndpoint } from "../constants/endpoints";
 import type { ModelEntry } from "../constants/models";
 import { DISCOVERY_TIMEOUT } from "../constants/timeouts";
 import { OpenAIHTTPError } from "./errors";
 
-const CACHE_KEY = "models:v4"; // v4: entries gained `premiumOnly`
+const CACHE_KEY = "models:v5"; // v5: web.chatplayground.ai feed (slug ids)
 const KV_TTL_S = 60 * 60; // 1 hour
 const MEM_TTL_MS = 5 * 60 * 1000; // 5 min in-isolate cache
 
@@ -58,11 +57,9 @@ export async function getModels(env: DiscoveryEnv): Promise<ModelEntry[]> {
 
 // One entry in chatplayground's /api/models feed. Only the fields we consume.
 interface ApiModel {
-  botId: string;
-  modelName: string;
+  slug: string;
   provider: string;
   group: string;
-  endpoint: string;
   // Optional on purpose: if upstream ever drops the field we still want
   // discovery to succeed rather than fail the whole request.
   premiumOnly?: boolean;
@@ -72,12 +69,13 @@ async function discover(chatUrl: string): Promise<ModelEntry[]> {
   // Fetched WITHOUT the Clerk id on purpose. /api/models is a public static
   // catalogue: the response is byte-identical with and without an
   // X-Clerk-User-Id header, so sending one buys nothing. Upstream personalises
-  // nothing here — it ships the raw flags (premiumOnly, lifetimeOnly, tier,
-  // creditWeight) and lets its own frontend do the filtering, which is why
-  // this relay has to filter too.
+  // nothing here — it ships the raw flags (premiumOnly, lifetimeOnly, tier)
+  // and lets its own frontend do the filtering, which is why this relay has to
+  // filter too.
   //
-  // /api/chat/azure → /api/models (sibling under /api/)
-  const url = new URL("../models", chatUrl);
+  // /api/chat → /api/models (sibling under /api/; no trailing slash, so a
+  // bare relative name replaces the last segment)
+  const url = new URL("models", chatUrl);
   const res = await fetch(url, {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(DISCOVERY_TIMEOUT),
@@ -90,21 +88,9 @@ async function discover(chatUrl: string): Promise<ModelEntry[]> {
   const out: ModelEntry[] = [];
   for (const e of raw) {
     if (!isApiModel(e) || e.group !== "chat") continue;
-    // Include inactive models too — `active` is UI visibility only; inactive
-    // models (e.g. perplexity sonar-pro) are still callable upstream.
-    const provider = e.provider.toLowerCase();
-    // Some feed modelNames already carry a provider slug (e.g. lmsys
-    // "meta-llama/llama-4-scout-…"); don't double-prefix those.
-    const upstreamModel = e.modelName.includes("/")
-      ? e.modelName
-      : `${provider}/${e.modelName}`;
     out.push({
-      id: e.botId,
-      modelName: e.modelName,
-      upstreamModel,
-      upstreamBotId: e.botId,
-      provider,
-      endpoint: toEndpoint(e.endpoint),
+      id: e.slug,
+      provider: e.provider.toLowerCase(),
       premiumOnly: e.premiumOnly === true,
     });
   }
@@ -123,13 +109,10 @@ function isApiModel(v: unknown): v is ApiModel {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;
   return (
-    typeof o.botId === "string" &&
-    o.botId.length > 0 &&
-    typeof o.modelName === "string" &&
-    o.modelName.length > 0 &&
+    typeof o.slug === "string" &&
+    o.slug.length > 0 &&
     typeof o.provider === "string" &&
-    typeof o.group === "string" &&
-    typeof o.endpoint === "string"
+    typeof o.group === "string"
   );
 }
 
@@ -156,7 +139,7 @@ export function resetModelCache(): void {
 //
 // `lifetimeOnly` is not read, and that is not a claim about what it means.
 // Only one such model was ever tested and it succeeded, which cannot tell a
-// real gate apart from a UI badge — compare `active`, which the feed sets and
+// real gate apart from a UI badge — compare `active`, which the old app. feed set and
 // upstream ignores. Since all three lifetimeOnly models are premiumOnly:false
 // they are listed either way, so the filter never has to resolve it.
 // Chat requests are never filtered — upstream is the one enforcing access.

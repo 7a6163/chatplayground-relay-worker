@@ -1,18 +1,13 @@
 import { Hono } from "hono";
-import { UPLOAD_TIMEOUT } from "../constants/timeouts";
 import type { Env, Variables } from "../types/env";
-import { invalidRequest, upstreamError } from "../utils/errors";
+import { invalidRequest } from "../utils/errors";
+import { uploadImage } from "../utils/upstream-upload";
 
 const files = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-// OpenAI Files API — used by SDKs to upload images for vision chats.
-// We forward the raw multipart body to chatplayground's temp-file-host
-// (no upstream auth needed) and surface the resulting URL as the file `id`,
-// so callers can paste it directly into `image_url.url` later.
-//
-// We don't parse the multipart ourselves because workers-types narrows
-// FormData entries to `string | null`, making per-field access awkward.
-// Forwarding the raw body is also more efficient (no buffering).
+// OpenAI Files API — used by SDKs to upload images for vision chats. The
+// image goes through upstream's own upload flow, and the upstream fileId comes
+// back as the file `id`, which chat accepts as `image_url.url`.
 files.post("/v1/files", async (c) => {
   const contentType = c.req.header("content-type");
   if (!contentType?.toLowerCase().startsWith("multipart/form-data")) {
@@ -21,49 +16,21 @@ files.post("/v1/files", async (c) => {
     );
   }
 
-  const reqBody = c.req.raw.body;
-  if (!reqBody) {
-    throw invalidRequest("Request body is empty.");
+  const form = await c.req.parseBody().catch(() => null);
+  const file = form?.file;
+  if (!(file instanceof File)) {
+    throw invalidRequest("Multipart body has no 'file' field.", "file");
   }
 
-  const contentLengthHeader = c.req.header("content-length");
-  const bytes = contentLengthHeader ? Number(contentLengthHeader) : 0;
+  const token = await c.get("sessionToken")();
+  const id = await uploadImage(file, file.name, token, c.env);
 
-  const res = await fetch(c.env.UPSTREAM_UPLOAD_URL, {
-    method: "POST",
-    headers: {
-      "content-type": contentType,
-      origin: c.env.UPSTREAM_ORIGIN,
-      referer: c.env.UPSTREAM_REFERER,
-      accept: "*/*",
-    },
-    body: reqBody,
-    signal: AbortSignal.timeout(UPLOAD_TIMEOUT),
-  });
-
-  if (!res.ok) {
-    throw upstreamError(
-      res.status,
-      `Upload failed: upstream returned ${res.status}.`,
-    );
-  }
-
-  const body = (await res.json().catch(() => null)) as { url?: string } | null;
-  if (!body?.url) {
-    throw upstreamError(
-      502,
-      "Upload succeeded but upstream did not return a URL.",
-    );
-  }
-
-  // Best-effort OpenAI Files shape. We don't have filename/size from the
-  // raw passthrough; SDKs that need them can read the URL from `id`.
   return c.json({
-    id: body.url, // doubles as image_url.url for follow-up vision chats
+    id, // doubles as image_url.url for follow-up vision chats
     object: "file",
-    bytes: Number.isFinite(bytes) ? bytes : 0,
+    bytes: file.size,
     created_at: Math.floor(Date.now() / 1000),
-    filename: "upload",
+    filename: file.name || "image",
     purpose: "vision",
     status: "processed",
     status_details: null,

@@ -13,10 +13,9 @@
   },
 
   "vars": {
-    "UPSTREAM_CHAT_URL": "https://app.chatplayground.ai/api/chat/azure",
+    "UPSTREAM_CHAT_URL": "https://web.chatplayground.ai/api/chat",
     "UPSTREAM_ORIGIN": "https://web.chatplayground.ai",
     "UPSTREAM_REFERER": "https://web.chatplayground.ai/",
-    "UPSTREAM_UPLOAD_URL": "https://temp-file-host.chatplayground.ai/upload",
     "CLERK_FAPI_URL": "https://clerk.chatplayground.ai"
 
     // Uncomment once the account has premium access — exposes the 12
