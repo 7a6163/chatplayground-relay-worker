@@ -2,101 +2,95 @@ import type {
   ChatCompletionChunk,
   ChatCompletionChunkDelta,
 } from "../types/openai";
+import type { UpstreamEvent } from "../types/upstream";
+import { upstreamError } from "./errors";
 
-// chatplayground marks the stream with a `CHAT_ID:<cuid>` sentinel. CUID
-// format: `c` + ≥20 chars of [a-z0-9]. It has moved from the very end to the
-// very start once already, so a complete one is stripped wherever it lands.
-const SENTINEL_RE = /CHAT_ID:(c[a-z0-9]{20,})(?![a-z0-9])/;
-// Mid-stream the cuid may still be arriving: complete only once a non-cuid
-// character follows it.
-const STREAM_SENTINEL_RE = /CHAT_ID:c[a-z0-9]{20,}(?=[^a-z0-9])/;
-const HOLDBACK_CHARS = 100;
-// A real citation list is a handful of URLs, far below this.
-const MAX_CITATIONS_CHARS = 16_384;
-
-// perplexity emits its citation list as a trailing chunk of the form
-// `CITATIONS:["url1","url2",...]`. The web client parses it as structured
-// citations; we strip it from the prose and re-format as Markdown so
-// OpenAI-compatible clients render proper links.
-const CITATIONS_RE = /CITATIONS:(\[[\s\S]*?\])/;
-const CITATIONS_MARKER = "CITATIONS:[";
-// Newer responses lead with the sentinel instead (`CHAT_ID:<cuid>\n<prose>`).
-const LEADING_SENTINEL_RE = /^\s*CHAT_ID:(c[a-z0-9]{20,})(?![a-z0-9])\s*/;
-// A buffer that may still grow into a leading sentinel: a prefix of the marker,
-// or the marker with a cuid that may not have finished arriving.
-const PARTIAL_LEADING_RE =
-  /^\s*(?:C(?:H(?:A(?:T(?:_(?:I(?:D(?::(?:c[a-z0-9]*)?)?)?)?)?)?)?)?)?$/;
+export interface UpstreamUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
 
 export interface ParsedUpstream {
   content: string;
-  chatId: string | null;
   citations: readonly string[];
+  usage: UpstreamUsage | null; // null when upstream sent no usable counts
 }
 
-/** Read entire upstream body, strip trailers, return content + chatId + citations. */
-export async function collectUpstream(
-  body: ReadableStream<Uint8Array>,
-): Promise<ParsedUpstream> {
-  const reader = body.getReader();
+/**
+ * The `data:` events of an upstream reply, in order. Lines that are not
+ * `data:` JSON with a string `type` are skipped, `[DONE]` included.
+ */
+export async function* readEvents(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): AsyncGenerator<UpstreamEvent> {
   const decoder = new TextDecoder();
   let buf = "";
   while (true) {
     const { value, done } = await reader.read();
-    if (done) break;
-    if (value) buf += decoder.decode(value, { stream: true });
-  }
-  buf += decoder.decode();
-  return parseTrailers(buf);
-}
-
-/**
- * Strip the CHAT_ID sentinel and perplexity CITATIONS payload from a
- * fully-buffered upstream response. A leading sentinel also takes the
- * whitespace around it. Both are matched with no anchor, so either order
- * (CITATIONS-then-CHAT_ID or CHAT_ID-then-CITATIONS) is handled.
- */
-export function parseTrailers(buf: string): ParsedUpstream {
-  const lm = LEADING_SENTINEL_RE.exec(buf);
-  if (!lm) return parseTail(buf);
-  const rest = parseTail(buf.slice(lm[0].length));
-  // The cuid group always captures when the regex matches.
-  return { ...rest, chatId: rest.chatId ?? lm[1]! };
-}
-
-/** parseTrailers without the leading-sentinel rule. */
-function parseTail(buf: string): ParsedUpstream {
-  let working = buf;
-  let chatId: string | null = null;
-  let citations: readonly string[] = [];
-
-  const cm = CITATIONS_RE.exec(working);
-  if (cm?.[1]) {
-    const parsed = safeParseStringArray(cm[1]);
-    if (parsed) {
-      citations = parsed;
-      working =
-        working.slice(0, cm.index) + working.slice(cm.index + cm[0].length);
+    buf += done ? decoder.decode() : decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = done ? "" : lines.pop()!; // split() never returns []
+    for (const line of lines) {
+      const event = parseLine(line);
+      if (event) yield event;
     }
+    if (done) return;
   }
-
-  const sm = SENTINEL_RE.exec(working);
-  if (sm) {
-    chatId = sm[1] ?? null;
-    working =
-      working.slice(0, sm.index) + working.slice(sm.index + sm[0].length);
-  }
-
-  return { content: working, chatId, citations };
 }
 
-function safeParseStringArray(json: string): readonly string[] | null {
+function parseLine(line: string): UpstreamEvent | null {
+  if (!line.startsWith("data:")) return null;
+  const data = line.slice(5).trim();
+  if (!data || data === "[DONE]") return null;
   try {
-    const value: unknown = JSON.parse(json);
-    if (!Array.isArray(value)) return null;
-    return value.filter((u): u is string => typeof u === "string");
+    const v: unknown = JSON.parse(data);
+    return typeof v === "object" &&
+      v !== null &&
+      typeof (v as UpstreamEvent).type === "string"
+      ? (v as UpstreamEvent)
+      : null;
   } catch {
     return null;
   }
+}
+
+const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
+const num = (v: unknown): number =>
+  typeof v === "number" && Number.isFinite(v) ? v : 0;
+
+function usageOf(e: UpstreamEvent): UpstreamUsage | null {
+  const u = e.messageMetadata?.usage;
+  if (!u || typeof u.inputTokens !== "number") return null;
+  // OpenAI counts reasoning inside completion_tokens; upstream reports it apart.
+  return {
+    inputTokens: num(u.inputTokens),
+    outputTokens: num(u.outputTokens) + num(u.reasoningTokens),
+  };
+}
+
+/** An `error` event mid-reply. Upstream already answered 200, so it is a 502. */
+function replyError(e: UpstreamEvent) {
+  return upstreamError(
+    502,
+    `Upstream failed mid-reply: ${str(e.errorText) ?? "no message"}`,
+  );
+}
+
+/** Read the whole reply: answer text, source URLs and upstream's usage. */
+export async function collectUpstream(
+  body: ReadableStream<Uint8Array>,
+): Promise<ParsedUpstream> {
+  let content = "";
+  const citations: string[] = [];
+  let usage: UpstreamUsage | null = null;
+  for await (const e of readEvents(body.getReader())) {
+    if (e.type === "text-delta") content += str(e.delta) ?? "";
+    else if (e.type === "source-url" && str(e.url))
+      citations.push(e.url as string);
+    else if (e.type === "finish") usage = usageOf(e) ?? usage;
+    else if (e.type === "error") throw replyError(e);
+  }
+  return { content, citations, usage };
 }
 
 /** Markdown sources block appended at the end of an assistant message. */
@@ -135,17 +129,11 @@ interface ChunkMeta {
 }
 
 /**
- * Wrap upstream text stream as OpenAI-format chat.completion.chunk SSE.
- *
- * Flush boundary: a complete marker (CHAT_ID or a parseable CITATIONS array)
- * is cut out of the buffer as soon as it is whole, wherever it sits, so prose
- * keeps flowing past it. Otherwise we hold back HOLDBACK_CHARS against a
- * marker split across chunks — and, since a citations array can outgrow
- * that, hold at an unclosed `CITATIONS:[` until it closes (within a cap).
- *
- * At stream end we parse the held-back tail, emit any remaining prose, and —
- * if perplexity citations were collected — append a Markdown sources block
- * as one final delta before the `[DONE]` terminator. Cancelling the stream
+ * Re-emit upstream's text deltas as OpenAI chat.completion.chunk SSE.
+ * Reasoning deltas are dropped. Source URLs are collected and appended as one
+ * Markdown sources block before the stop chunk. An upstream `error` event
+ * becomes an OpenAI-style `{"error": …}` event: the 200 is already sent, so
+ * that is the only way left to tell the client why. Cancelling the stream
  * (client gone) cancels the upstream read.
  */
 export function streamUpstreamAsOpenAI(
@@ -153,7 +141,7 @@ export function streamUpstreamAsOpenAI(
   meta: ChunkMeta,
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
+  const data = (v: unknown) => encoder.encode(`data: ${JSON.stringify(v)}\n\n`);
 
   function sse(
     delta: ChatCompletionChunkDelta,
@@ -166,51 +154,40 @@ export function streamUpstreamAsOpenAI(
       model: meta.model,
       choices: [{ index: 0, delta, finish_reason: finishReason }],
     };
-    return encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`);
+    return data(chunk);
   }
 
   const reader = body.getReader();
 
   return new ReadableStream({
     async start(controller) {
-      let pending = "";
       const citations: string[] = [];
-      // Until the head of the stream is known not to be (or no longer to be) a
-      // leading CHAT_ID sentinel, flush nothing.
-      let head = true;
-
+      // A delta can end on half a surrogate pair. Hold it for the next one: a
+      // lone half breaks clients that decode each chunk on its own (Python's
+      // openai SDK raises on encode).
+      let held = "";
       controller.enqueue(sse({ role: "assistant" }));
 
       try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          if (!value) continue;
-
-          pending += decoder.decode(value, { stream: true });
-
-          if (head) {
-            if (PARTIAL_LEADING_RE.test(pending)) continue;
-            pending = pending.replace(LEADING_SENTINEL_RE, "");
-            head = false;
-          }
-
-          pending = cutMarkers(pending, citations);
-          const boundary = flushBoundary(pending);
-          if (boundary > 0) {
-            const out = pending.slice(0, boundary);
-            pending = pending.slice(boundary);
-            controller.enqueue(sse({ content: out }));
+        for await (const e of readEvents(reader)) {
+          if (e.type === "text-delta") {
+            let text = held + (str(e.delta) ?? "");
+            const last = text.charCodeAt(text.length - 1);
+            held = last >= 0xd800 && last <= 0xdbff ? text.slice(-1) : "";
+            text = held ? text.slice(0, -1) : text;
+            if (text) controller.enqueue(sse({ content: text }));
+          } else if (e.type === "source-url" && str(e.url)) {
+            citations.push(e.url as string);
+          } else if (e.type === "error") {
+            controller.enqueue(data(replyError(e).toEnvelope()));
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+            return;
           }
         }
 
-        pending += decoder.decode();
-        // Past the head, a sentinel at the start of the tail is not leading.
-        const tail = head ? parseTrailers(pending) : parseTail(pending);
-        if (tail.content) controller.enqueue(sse({ content: tail.content }));
-        const sources = formatCitations([...citations, ...tail.citations]);
-        if (sources) controller.enqueue(sse({ content: sources }));
-
+        const tail = held + formatCitations(citations);
+        if (tail) controller.enqueue(sse({ content: tail }));
         controller.enqueue(sse({}, "stop"));
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
@@ -223,37 +200,4 @@ export function streamUpstreamAsOpenAI(
       return reader.cancel(reason);
     },
   });
-}
-
-/** Cut complete markers out of the buffer, collecting citations. */
-function cutMarkers(pending: string, citations: string[]): string {
-  let out = pending;
-  const cm = CITATIONS_RE.exec(out);
-  const parsed = cm?.[1] ? safeParseStringArray(cm[1]) : null;
-  if (cm && parsed) {
-    citations.push(...parsed);
-    out = out.slice(0, cm.index) + out.slice(cm.index + cm[0].length);
-  }
-  const sm = STREAM_SENTINEL_RE.exec(out);
-  if (sm) out = out.slice(0, sm.index) + out.slice(sm.index + sm[0].length);
-  return out;
-}
-
-function flushBoundary(pending: string): number {
-  let cut = Math.max(0, pending.length - HOLDBACK_CHARS);
-  // An unclosed array is held — but only so far: past MAX_CITATIONS_CHARS it
-  // is prose that happens to say `CITATIONS:[`, and holding it until EOF would
-  // rescan an ever-growing buffer on every chunk.
-  const citIdx = pending.indexOf(CITATIONS_MARKER);
-  if (
-    citIdx >= 0 &&
-    pending.length - citIdx < MAX_CITATIONS_CHARS &&
-    !pending.includes("]", citIdx)
-  ) {
-    cut = Math.min(cut, citIdx);
-  }
-  // Never split a surrogate pair: a lone half breaks clients that decode each
-  // chunk on its own (Python's openai SDK raises on encode).
-  const code = pending.charCodeAt(cut - 1);
-  return code >= 0xd800 && code <= 0xdbff ? cut - 1 : cut;
 }

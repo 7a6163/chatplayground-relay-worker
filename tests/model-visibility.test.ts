@@ -4,11 +4,7 @@ import { isVisible } from "../src/utils/model-discovery";
 
 const entry = (premiumOnly?: boolean): ModelEntry => ({
   id: "m",
-  modelName: "m",
-  upstreamModel: "p/m",
-  upstreamBotId: "m",
   provider: "p",
-  endpoint: "azure",
   premiumOnly,
 });
 

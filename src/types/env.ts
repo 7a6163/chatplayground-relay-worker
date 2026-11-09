@@ -3,7 +3,6 @@ export interface Env {
   UPSTREAM_CHAT_URL: string;
   UPSTREAM_ORIGIN: string;
   UPSTREAM_REFERER: string;
-  UPSTREAM_UPLOAD_URL: string;
   // Clerk frontend API origin — where gateway mode mints session tokens.
   CLERK_FAPI_URL: string;
   // "true" exposes premium models in /v1/models. Unset → non-premium list.

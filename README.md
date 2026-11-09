@@ -42,7 +42,7 @@ OpenAI-style Bearer token, forwarded verbatim as `Authorization: Bearer <jwt>`.
 1. Open <https://web.chatplayground.ai/> and sign in
 2. Open DevTools → Network tab
 3. Send any message in the UI
-4. Find the request to `/api/chat/azure`
+4. Find the request to `/api/chat`
 5. Copy the `Authorization` header value (the `eyJ...` JWT)
 
 > ⚠️ **These tokens expire 60 seconds after Clerk issues them.**
@@ -151,9 +151,9 @@ live cookie.
 
 | Endpoint | Notes |
 |---|---|
-| `POST /v1/chat/completions` | Stream + non-stream; multimodal (`image_url` content parts) |
+| `POST /v1/chat/completions` | Stream + non-stream; images via `image_url` (a `data:` base64 URI, an http(s) URL, or a `/v1/files` id) |
 | `GET /v1/models` | Dynamic discovery from chatplayground's `/api/models`, KV + memory cached; `premiumOnly` models hidden unless `PREMIUM_MODELS="true"` |
-| `POST /v1/files` | Image upload proxy → returns a URL usable as `image_url.url` |
+| `POST /v1/files` | Image upload (JPEG / PNG / WebP / GIF, ≤ 4 MB) → returns an id usable as `image_url.url` |
 
 | Not supported | Why |
 |---|---|
@@ -164,11 +164,9 @@ live cookie.
 
 ### Chat models (auto-discovered)
 
-chatplayground serves chat models from **three upstream endpoints**
-(`azure` / `perplexity` / `lmsys`); each model's feed entry names its endpoint,
-and the relay routes on that field, so a single OpenAI `model` field reaches
-the right one. Models chatplayground marks `active:false` are still exposed —
-that flag is UI visibility only, and inactive models remain callable upstream.
+Every chat model is served by one upstream route, `POST /api/chat`, keyed by
+the feed's `slug`. The OpenAI `model` field is that slug, bare
+(`gpt-6-luna`) or provider-prefixed (`openai/gpt-6-luna`).
 
 Models the feed marks `premiumOnly` are **hidden from `GET /v1/models` by
 default**, because upstream returns 403 for them without a premium plan; set
@@ -303,10 +301,10 @@ for chunk in client.chat.completions.create(
 ):
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 
-# Vision — upload via /v1/files, then reference
+# Vision — an image URL, a base64 data URI, or an id from /v1/files
 file = client.files.create(file=open("photo.jpg", "rb"), purpose="vision")
 resp = client.chat.completions.create(
-    model="llama-4-scout",
+    model="gpt-6-luna",
     messages=[{
         "role": "user",
         "content": [
@@ -329,23 +327,22 @@ Add a custom OpenAI-compatible provider:
 ### Continuing a chatplayground-side conversation
 
 Every API call defaults to a fresh chatplayground chat with `noSave: true` —
-nothing shows up in your chatplayground.ai dashboard, and each request starts
-a new conversation on the upstream side.
+nothing shows up in your chatplayground.ai dashboard (verified live), and each
+request starts a new conversation on the upstream side.
 
-Upstream accepts only one message per request ("Send only the new prompt.
-Conversation history is not accepted."); the web UI sends just the new turn
-and keeps history server-side under the chat id. The relay stays stateless
-instead: OpenAI clients re-send the full `messages[]` every turn, and the relay
-folds them into a single user message as a role-labelled transcript
-(`System:` / `User:` / `Assistant:`, images kept in place). Multi-turn works,
-but the model sees a transcript rather than native turns.
+Upstream takes a single prompt per request (`message: {text}`); the web UI
+sends just the new turn and keeps history server-side under the
+`conversationId`. The relay stays stateless instead: OpenAI clients re-send the
+full `messages[]` every turn, and the relay folds them into one prompt as a
+role-labelled transcript (`System:` / `User:` / `Assistant:`). Multi-turn
+works, but the model sees a transcript rather than native turns.
 
 Two opt-in extension fields let you change that:
 
 | If you want | Add to request body |
 |---|---|
 | Save to chatplayground history | `"metadata": {"save": true}` |
-| Continue a specific chatplayground chat | `"user": "<chatId>"` (CUID from a prior chatplayground session) |
+| Continue a specific chatplayground chat | `"user": "<conversationId>"` (from a prior chatplayground session) |
 
 Standard OpenAI SDKs don't surface these but you can hand-craft the request.
 When continuing a chat with `user`, send only the new message: upstream already
@@ -364,16 +361,15 @@ Cloudflare Worker (Hono)
   ├── middleware/error-handler → wrap thrown errors in OpenAI envelope
   ├── routes/chat              → translate body, fetch upstream, stream back
   ├── routes/models            → live discovery + 3-layer cache
-  └── routes/files             → forward multipart to temp-file-host
+  └── routes/files             → upload via presign → storage PUT → complete
                 │
-                │  POST app.chatplayground.ai/api/chat/{azure|perplexity|lmsys}
-                │       (endpoint taken from the model's feed entry)
-                │  Content-Type: text/plain;charset=UTF-8
+                │  POST web.chatplayground.ai/api/chat
+                │  {modelSlug, submissionId, message:{text}, noSave}
                 │  Authorization: Bearer <session jwt>
                 ▼
        chatplayground upstream
-                │  text/plain stream + "CHAT_ID:<cuid>" sentinel (leading in
-                │  newer responses, trailing in older ones)
+                │  SSE, Vercel AI SDK UI-message stream (text-delta,
+                │  reasoning-delta, source-url, error, finish{usage})
                 ▼
        streamUpstreamAsOpenAI → OpenAI chat.completion.chunk SSE
 ```
@@ -385,12 +381,9 @@ Cloudflare Worker (Hono)
 1. **In-isolate memory cache** (5 min TTL) — hits if isolate is warm
 2. **KV cache** (1 h TTL) — hits across isolates if `MODEL_CACHE` binding is configured
    (the same namespace also holds the rotated Clerk cookie under `clerk:client_cookie`)
-3. **Live discovery** — `GET app.chatplayground.ai/api/models` (public JSON,
-   no auth), validate the fields it relies on (`{botId, modelName, provider,
-   group, endpoint}`), keep `group:"chat"`. The `active` flag is
-   **not** filtered on — it controls UI visibility only; inactive models are
-   still callable upstream. Each entry's `endpoint` field decides which of the
-   three `/api/chat/*` upstreams serves it.
+3. **Live discovery** — `GET web.chatplayground.ai/api/models` (public JSON,
+   no auth), validate the fields it relies on (`{slug, provider, group}`),
+   keep `group:"chat"`.
 If all three miss, the request fails with **503** `model_discovery_failed`.
 There is deliberately no hardcoded fallback list: it would be a copy of data
 that lives upstream, so it rots unnoticed and only gets used on the day
@@ -418,7 +411,6 @@ carry the same flags today.
 src/
 ├── index.ts                  Hono app + CORS + auth + route mounting
 ├── constants/
-│   ├── endpoints.ts          azure / perplexity / lmsys, unknown → lmsys
 │   ├── models.ts             ModelEntry shape (no hardcoded list)
 │   └── timeouts.ts           CHAT / UPLOAD / DISCOVERY fetch timeouts
 ├── middleware/
@@ -438,7 +430,8 @@ src/
     ├── model-discovery.ts    /api/models fetch + validate + cache layers
     ├── clerk-token.ts        gateway mode: __client cookie → 60s session JWT
     ├── upstream-request.ts   OpenAI → chatplayground body translator
-    └── upstream-stream.ts    CHAT_ID sentinel strip + OpenAI SSE wrap
+    ├── upstream-upload.ts    image → presign / PUT / complete → fileId
+    └── upstream-stream.ts    upstream SSE events → OpenAI SSE / completion
 ```
 
 ## Configuration
@@ -448,10 +441,9 @@ different upstream instance.
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `UPSTREAM_CHAT_URL` | `https://app.chatplayground.ai/api/chat/azure` | Azure chat endpoint; the `perplexity` / `lmsys` sibling URLs are derived from it |
+| `UPSTREAM_CHAT_URL` | `https://web.chatplayground.ai/api/chat` | Chat endpoint; `/api/models` is derived from it as a sibling |
 | `UPSTREAM_ORIGIN` | `https://web.chatplayground.ai` | Forwarded as `Origin` |
 | `UPSTREAM_REFERER` | `https://web.chatplayground.ai/` | Forwarded as `Referer` |
-| `UPSTREAM_UPLOAD_URL` | `https://temp-file-host.chatplayground.ai/upload` | File upload endpoint |
 | `CLERK_FAPI_URL` | `https://clerk.chatplayground.ai` | Clerk frontend API; gateway mode mints session tokens here |
 | `PREMIUM_MODELS` | unset | `"true"` lists `premiumOnly` models in `GET /v1/models`. Leave unset unless the account has premium — upstream 403s them otherwise. Any other value counts as off |
 
@@ -463,8 +455,8 @@ Optional KV bindings:
 
 ## Caveats
 
-1. **No tool / function calling.** None of the upstream chat endpoints
-   (`azure` / `perplexity` / `lmsys`) support it — live-tested: injected
+1. **No tool / function calling.** The old upstream chat endpoints never
+   supported it — live-tested there: injected
    OpenAI `tools` are ignored and answered as prose, and a forced
    `tool_choice` returns a plain-text error, never a structured `tool_calls`
    reply. The relay also never forwards `tools` / `tool_choice` upstream.
@@ -472,8 +464,16 @@ Optional KV bindings:
    message per request, so a multi-turn `messages[]` reaches the model as a
    single role-labelled transcript — see [Continuing a chatplayground-side
    conversation](#continuing-a-chatplayground-side-conversation).
-3. **No real usage counts.** chatplayground doesn't return token usage, so
-   the `usage` field is estimated (chars ÷ 4). Don't bill on it.
+3. **Images are re-uploaded upstream.** Every `image_url` that is a data URI
+   or http(s) URL goes through upstream's presign → upload → complete flow on
+   each request (a `/v1/files` id skips that). Upstream's limits apply: JPEG /
+   PNG / WebP / GIF, 4 MB each, and the relay allows at most 4 per request
+   (the web client's cap). In a multi-turn history every image is attached to
+   the one folded prompt. Remote URLs are fetched by the worker, so hosts that
+   block bot traffic (e.g. Wikimedia without a User-Agent) fail with 400.
+   Non-streaming `usage` now comes from upstream's own token counts (reasoning
+   tokens counted inside `completion_tokens`), falling back to chars ÷ 4 only
+   when upstream sends none. Streaming responses carry no usage.
 4. **Premium models 403 on a non-premium account.** The feed marks about a
    third of its chat models `premiumOnly` (11 of 32 at the last check); upstream rejects those unless the account has
    premium. They're hidden from `GET /v1/models` by default but stay callable,
@@ -507,11 +507,8 @@ Optional KV bindings:
    `premiumOnly:false`, so they are listed regardless of what it means.
 7. **Brittle to upstream changes.** Any change to `/api/models` shape, endpoint
    path, or request shape may break the worker. Open an issue / PR.
-8. **`/v1/files` is essentially anonymous** in passthrough mode (gateway mode
-   puts it behind the relay key like everything else). chatplayground's upload
-   endpoint accepts any caller (no auth), and our Bearer regex is a speed
-   bump, not a gate. If you deploy publicly and care about your worker's
-   request quota, add a size cap or remove the route.
+8. **`/v1/files` needs a working upstream session**, like chat: uploads go
+   into the chatplayground account behind the token.
 9. **Keep your session token and `__client` cookie private.** They grant access to your
    chatplayground account quota; treat it like an API key.
 

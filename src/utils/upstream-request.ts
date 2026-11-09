@@ -1,59 +1,24 @@
-import type { UpstreamEndpoint } from "../constants/endpoints";
 import type { ModelEntry } from "../constants/models";
 import type { ChatCompletionRequest, OpenAIMessage } from "../types/openai";
-import type {
-  UpstreamChatRequest,
-  UpstreamContentPart,
-  UpstreamContentPartText,
-  UpstreamMessage,
-} from "../types/upstream";
-
-export interface BuiltUpstreamRequest {
-  endpoint: UpstreamEndpoint;
-  body: UpstreamChatRequest;
-}
+import type { UpstreamChatRequest } from "../types/upstream";
+import { invalidRequest } from "./errors";
+import { MAX_IMAGES } from "./upstream-upload";
 
 export function buildUpstreamRequest(
   req: ChatCompletionRequest,
   model: ModelEntry,
-): BuiltUpstreamRequest {
-  const messages = collapseHistory(req.messages);
-
+): UpstreamChatRequest {
   // OpenAI `metadata.save` extension → !noSave. Default: don't pollute the
   // caller's chatplayground history with API traffic (noSave=true).
   const save = req.metadata?.save ?? false;
-
-  // Fields shared by all three endpoints.
-  const base = {
-    messages,
-    chatId: req.user ?? "", // OpenAI `user` → chatplayground `chatId`
-    isRegenerate: false,
-    promptTemplate: null,
-    fileUrl: null,
-    botId: model.upstreamBotId,
+  return {
+    modelSlug: model.id,
+    submissionId: crypto.randomUUID(),
+    message: { text: collapseHistory(req.messages) },
+    // OpenAI `user` → chatplayground conversationId (continue that chat)
+    ...(req.user ? { conversationId: req.user } : {}),
     noSave: !save,
   };
-
-  // The model identifier field differs per endpoint (see types/upstream.ts):
-  // azure wants the provider/model slug; perplexity wants a bare modelName;
-  // lmsys wants the bare name in `model`. perplexity/lmsys also take an
-  // apiKey — null means "use chatplayground's own upstream key" (the relay
-  // is BYO-less, so always null).
-  const endpoint = model.endpoint;
-  switch (endpoint) {
-    case "azure":
-      return { endpoint, body: { ...base, model: model.upstreamModel } };
-    case "perplexity":
-      return {
-        endpoint,
-        body: { ...base, modelName: model.modelName, apiKey: null },
-      };
-    case "lmsys":
-      return {
-        endpoint,
-        body: { ...base, model: model.modelName, apiKey: null },
-      };
-  }
 }
 
 const ROLE_LABEL = {
@@ -64,59 +29,54 @@ const ROLE_LABEL = {
   tool: "Tool",
 } as const;
 
-// No endpoint has a tool or developer role.
-const UPSTREAM_ROLE = {
-  system: "system",
-  developer: "system",
-  user: "user",
-  assistant: "assistant",
-  tool: "user",
-} as const;
-
 /**
- * Upstream now 400s on more than one message ("Send only the new prompt.
- * Conversation history is not accepted.") — the web client sends only the new
- * turn and lets `chatId` carry history server-side. The relay is stateless, so
- * fold the OpenAI history into one user turn as a role-labelled transcript.
- * Content parts pass through unchanged (same shape as OpenAI), images in place.
+ * Upstream takes exactly one new prompt per call and keeps history
+ * server-side under `conversationId`. The relay is stateless, so fold the
+ * OpenAI history into one prompt as a role-labelled transcript.
  */
-function collapseHistory(messages: OpenAIMessage[]): UpstreamMessage[] {
+function collapseHistory(messages: OpenAIMessage[]): string {
   const [only] = messages;
-  if (messages.length === 1 && only) {
-    return [{ role: UPSTREAM_ROLE[only.role], content: only.content ?? "" }];
-  }
-
-  const parts: UpstreamContentPart[] = [];
-  for (const m of messages) {
-    const label = ROLE_LABEL[m.role];
-    if (m.content === null) {
-      parts.push({ type: "text", text: `${label}:` });
-    } else if (typeof m.content === "string") {
-      parts.push({ type: "text", text: `${label}: ${m.content}` });
-    } else {
-      parts.push({ type: "text", text: `${label}:` }, ...m.content);
-    }
-  }
-
-  const text = parts.every((p) => p.type === "text");
-  return [
-    {
-      role: "user",
-      content: text
-        ? parts.map((p) => (p as UpstreamContentPartText).text).join("\n\n")
-        : parts,
-    },
-  ];
+  if (messages.length === 1 && only) return textOf(only.content);
+  return messages
+    .map((m) => {
+      const text = textOf(m.content);
+      return text ? `${ROLE_LABEL[m.role]}: ${text}` : `${ROLE_LABEL[m.role]}:`;
+    })
+    .join("\n\n");
 }
 
-export function endpointUrl(
-  endpoint: UpstreamEndpoint,
-  baseChatUrl: string,
-): string {
-  // The three chat endpoints are siblings under /api/chat/. Resolving the
-  // endpoint name relative to the configured azure URL yields the others, so
-  // a single UPSTREAM_CHAT_URL var repoints the whole set at one instance.
-  return new URL(endpoint, baseChatUrl).toString();
+// Image parts travel as `message.attachments` (see imageUrls), not in the text.
+function textOf(content: OpenAIMessage["content"]): string {
+  if (content === null) return "";
+  if (typeof content === "string") return content;
+  return content.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
+}
+
+/**
+ * Every image in the conversation, in order. Upstream takes images only as
+ * attachments of the one prompt, so a folded history carries all of them.
+ */
+export function imageUrls(messages: OpenAIMessage[]): string[] {
+  const urls = messages.flatMap((m) =>
+    Array.isArray(m.content)
+      ? m.content.flatMap((p) =>
+          p.type === "image_url" ? [p.image_url?.url] : [],
+        )
+      : [],
+  );
+  if (urls.some((u) => typeof u !== "string" || !u)) {
+    throw invalidRequest(
+      "Every image_url part needs an image_url.url.",
+      "messages",
+    );
+  }
+  if (urls.length > MAX_IMAGES) {
+    throw invalidRequest(
+      `At most ${MAX_IMAGES} images per request.`,
+      "messages",
+    );
+  }
+  return urls as string[];
 }
 
 export interface UpstreamHeaderEnv {
@@ -128,13 +88,13 @@ export function buildUpstreamHeaders(
   sessionToken: string,
   env: UpstreamHeaderEnv,
 ): HeadersInit {
-  // text/plain bypasses CORS preflight — chatplayground's frontend uses this
-  // exact content-type and the backend enforces it.
+  // The web client authenticates with the `__session` cookie; verified live
+  // that a Bearer header with the same JWT is accepted too.
   return {
-    "content-type": "text/plain;charset=UTF-8",
+    "content-type": "application/json",
+    accept: "text/event-stream",
     authorization: `Bearer ${sessionToken}`,
     origin: env.UPSTREAM_ORIGIN,
     referer: env.UPSTREAM_REFERER,
-    accept: "*/*",
   };
 }

@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getModels, resetModelCache } from "../src/utils/model-discovery";
 
-const env = { UPSTREAM_CHAT_URL: "https://up.example.test/api/chat/azure" };
+const env = { UPSTREAM_CHAT_URL: "https://up.example.test/api/chat" };
 
 const entry = (over: Record<string, unknown> = {}) => ({
-  botId: "gpt-5.6-luna",
-  modelName: "gpt-5.6-luna",
+  slug: "gpt-6.1-sol",
+  displayName: "ChatGPT-6.1 Sol",
   provider: "OpenAI",
   group: "chat",
-  endpoint: "azure",
+  tier: "advanced",
   premiumOnly: true,
   ...over,
 });
@@ -45,9 +45,7 @@ describe("getModels — the three layers", () => {
   });
 
   it("prefers KV over a live fetch and warms memory from it", async () => {
-    const MODEL_CACHE = kv(
-      JSON.stringify([{ id: "cached", modelName: "cached" }]),
-    );
+    const MODEL_CACHE = kv(JSON.stringify([{ id: "cached", provider: "p" }]));
     vi.spyOn(globalThis, "fetch");
 
     const first = await getModels({ ...env, MODEL_CACHE });
@@ -68,8 +66,8 @@ describe("getModels — the three layers", () => {
       string,
       { expirationTtl: number },
     ];
-    expect(key).toBe("models:v4");
-    expect(JSON.parse(value)[0].id).toBe("gpt-5.6-luna");
+    expect(key).toBe("models:v5");
+    expect(JSON.parse(value)[0].id).toBe("gpt-6.1-sol");
     expect(opts.expirationTtl).toBe(3600);
   });
 
@@ -81,7 +79,7 @@ describe("getModels — the three layers", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json([entry()]));
 
     const models = await getModels({ ...env, MODEL_CACHE });
-    expect(models[0]?.id).toBe("gpt-5.6-luna");
+    expect(models[0]?.id).toBe("gpt-6.1-sol");
   });
 });
 
@@ -91,35 +89,18 @@ describe("getModels — parsing the feed", () => {
     return getModels(env);
   };
 
-  it("keeps only chat models and lowercases the provider", async () => {
+  it("keeps only chat models, keyed by slug, provider lowercased", async () => {
     const out = await discover([
       entry(),
-      entry({ botId: "dall-e", group: "image" }),
+      entry({ slug: "gpt-image-2.5", group: "image" }),
     ]);
-    expect(out).toHaveLength(1);
-    expect(out[0]?.provider).toBe("openai");
-    expect(out[0]?.upstreamModel).toBe("openai/gpt-5.6-luna");
-  });
-
-  it("does not double-prefix a modelName that already carries a slug", async () => {
-    const out = await discover([
-      entry({ modelName: "meta-llama/llama-4-scout", provider: "LMSYS" }),
+    expect(out).toEqual([
+      { id: "gpt-6.1-sol", provider: "openai", premiumOnly: true },
     ]);
-    expect(out[0]?.upstreamModel).toBe("meta-llama/llama-4-scout");
-  });
-
-  it("falls back to lmsys for an endpoint it doesn't know", async () => {
-    const out = await discover([entry({ endpoint: "something-new" })]);
-    expect(out[0]?.endpoint).toBe("lmsys");
-  });
-
-  it("keeps inactive models — the flag is UI-only", async () => {
-    const out = await discover([entry({ active: false })]);
-    expect(out).toHaveLength(1);
   });
 
   it("skips malformed entries rather than failing the whole feed", async () => {
-    const out = await discover([null, { botId: "" }, "nope", entry()]);
+    const out = await discover([null, { slug: "" }, "nope", entry()]);
     expect(out).toHaveLength(1);
   });
 

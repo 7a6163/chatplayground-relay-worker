@@ -3,4 +3,4 @@
 # Copy to .dev.vars (gitignored) if you need to override anything.
 #
 # Example (uncomment to use):
-# UPSTREAM_CHAT_URL=https://app.chatplayground.ai/api/chat/azure
+# UPSTREAM_CHAT_URL=https://web.chatplayground.ai/api/chat

@@ -13,8 +13,9 @@ import { findModel } from "../utils/model-id";
 import {
   buildUpstreamHeaders,
   buildUpstreamRequest,
-  endpointUrl,
+  imageUrls,
 } from "../utils/upstream-request";
+import { toFileId } from "../utils/upstream-upload";
 import {
   collectUpstream,
   formatCitations,
@@ -43,10 +44,18 @@ chat.post("/v1/chat/completions", async (c) => {
   const model = findModel(body.model, registry);
   if (!model) throw modelNotFound(body.model);
 
-  const { endpoint, body: upstreamBody } = buildUpstreamRequest(body, model);
+  const upstreamBody = buildUpstreamRequest(body, model);
+  const images = imageUrls(body.messages);
   const sessionToken = await c.get("sessionToken")();
+  if (images.length > 0) {
+    upstreamBody.message.attachments = await Promise.all(
+      images.map(async (url) => ({
+        fileId: await toFileId(url, sessionToken, c.env),
+      })),
+    );
+  }
 
-  const upstream = await fetch(endpointUrl(endpoint, c.env.UPSTREAM_CHAT_URL), {
+  const upstream = await fetch(c.env.UPSTREAM_CHAT_URL, {
     method: "POST",
     headers: buildUpstreamHeaders(sessionToken, c.env),
     body: JSON.stringify(upstreamBody),
@@ -85,13 +94,15 @@ chat.post("/v1/chat/completions", async (c) => {
     });
   }
 
-  const { content: rawContent, citations } = await collectUpstream(
-    upstream.body,
-  );
+  const {
+    content: rawContent,
+    citations,
+    usage,
+  } = await collectUpstream(upstream.body);
 
   // Non-streaming path: inline-rewrite [N] citation markers as Markdown links
-  // and append a sources block. Usage stays based on raw model output so the
-  // relay-added link formatting doesn't inflate completion_tokens.
+  // and append a sources block. The usage estimate stays based on raw model
+  // output so the relay-added link formatting doesn't inflate it.
   const content =
     citations.length === 0
       ? rawContent
@@ -109,13 +120,19 @@ chat.post("/v1/chat/completions", async (c) => {
         finish_reason: "stop",
       },
     ],
-    usage: estimateUsage(body.messages, rawContent),
+    usage: usage
+      ? {
+          prompt_tokens: usage.inputTokens,
+          completion_tokens: usage.outputTokens,
+          total_tokens: usage.inputTokens + usage.outputTokens,
+        }
+      : estimateUsage(body.messages, rawContent),
   };
 
   return Response.json(response);
 });
 
-// Crude usage estimate — chatplayground doesn't return token counts.
+// Fallback when upstream's finish event carries no token counts.
 // ~4 chars per token. Multimodal content parts count text only.
 function estimateUsage(
   messages: OpenAIMessage[],

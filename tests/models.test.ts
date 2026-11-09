@@ -5,27 +5,13 @@ import models from "../src/routes/models";
 import type { ModelList } from "../src/types/openai";
 import { resetModelCache } from "../src/utils/model-discovery";
 
-const env = { UPSTREAM_CHAT_URL: "https://up.example.test/api/chat/azure" };
+const env = { UPSTREAM_CHAT_URL: "https://up.example.test/api/chat" };
 
 const FEED = [
-  {
-    botId: "gpt-5.6-luna",
-    modelName: "gpt-5.6-luna",
-    provider: "OpenAI",
-    group: "chat",
-    endpoint: "azure",
-    premiumOnly: false,
-  },
-  {
-    botId: "grok-4.6",
-    modelName: "grok-4.6",
-    provider: "xAI",
-    group: "chat",
-    endpoint: "lmsys",
-    premiumOnly: true,
-  },
+  { slug: "gpt-6-luna", provider: "openai", group: "chat", premiumOnly: false },
+  { slug: "gpt-6.1-sol", provider: "openai", group: "chat", premiumOnly: true },
   // Not a chat model — discovery drops it before the listing ever sees it.
-  { botId: "dall-e", modelName: "dall-e", provider: "OpenAI", group: "image" },
+  { slug: "gpt-image-2.5", provider: "openai", group: "image" },
 ];
 
 // oxlint-disable-next-line typescript/no-explicit-any -- minimal test env stub
@@ -52,7 +38,7 @@ describe("GET /v1/models", () => {
     expect(body.object).toBe("list");
     expect(body.data).toEqual([
       {
-        id: "gpt-5.6-luna",
+        id: "gpt-6-luna",
         object: "model",
         created: expect.any(Number),
         owned_by: "openai",
@@ -63,7 +49,7 @@ describe("GET /v1/models", () => {
   it("hides premiumOnly models unless PREMIUM_MODELS is set", async () => {
     const res = await get({ ...env, PREMIUM_MODELS: "true" });
     const ids = ((await res.json()) as ModelList).data.map((m) => m.id);
-    expect(ids).toEqual(["gpt-5.6-luna", "grok-4.6"]);
+    expect(ids).toEqual(["gpt-6-luna", "gpt-6.1-sol"]);
   });
 
   it("503s when discovery fails instead of serving an empty list", async () => {
